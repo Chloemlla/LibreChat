@@ -4,7 +4,50 @@ import {
   StreamableHTTPOptionsSchema,
   MCPServerUserInputSchema,
   MCP_USER_INPUT_FIELDS,
+  MAX_MCP_ICON_PATH_LENGTH,
 } from '../src/mcp';
+
+describe('MCP server title validation', () => {
+  const titleCases = [
+    ['hyphenated ASCII title', 'Read-Only Tools'],
+    ['accented title', "Générateur d'images"],
+    ['Unicode title', '画像ツール'],
+    ['typographic apostrophe', 'Today’s Tools'],
+  ];
+
+  it.each(titleCases)('accepts a %s in configured MCP servers', (_label, title) => {
+    const result = MCPOptionsSchema.safeParse({
+      type: 'sse',
+      url: 'https://mcp-server.com/sse',
+      title,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each(titleCases)('accepts a %s from the MCP Builder', (_label, title) => {
+    const result = MCPServerUserInputSchema.safeParse({
+      type: 'sse',
+      url: 'https://mcp-server.com/sse',
+      title,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each(['', '   ', '-Tools', "'Tools", 'Tools@Home'])(
+    'rejects an invalid MCP server title: %p',
+    (title) => {
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'sse',
+        url: 'https://mcp-server.com/sse',
+        title,
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+});
 
 describe('MCPOptionsSchema', () => {
   describe('OBO transport support', () => {
@@ -45,6 +88,16 @@ describe('MCPOptionsSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  it('accepts the direct OpenID bearer placeholder for operator configuration', () => {
+    const result = MCPOptionsSchema.safeParse({
+      type: 'streamable-http',
+      url: 'https://mcp-server.com/http',
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('MCP schemas', () => {
@@ -73,6 +126,126 @@ describe('MCP schemas', () => {
     });
   });
 
+  describe('OAuth URL env variable resolution (admin schema)', () => {
+    const OAUTH_AUTH_URL = 'https://auth.example.com/authorize';
+    const OAUTH_TOKEN_URL = 'https://auth.example.com/token';
+    const OAUTH_REDIRECT_URI = 'https://app.example.com/callback';
+    const OAUTH_REVOCATION_URL = 'https://auth.example.com/revoke';
+
+    beforeEach(() => {
+      process.env.OAUTH_AUTH_URL = OAUTH_AUTH_URL;
+      process.env.OAUTH_TOKEN_URL = OAUTH_TOKEN_URL;
+      process.env.OAUTH_REDIRECT_URI = OAUTH_REDIRECT_URI;
+      process.env.OAUTH_REVOCATION_URL = OAUTH_REVOCATION_URL;
+    });
+
+    afterEach(() => {
+      delete process.env.OAUTH_AUTH_URL;
+      delete process.env.OAUTH_TOKEN_URL;
+      delete process.env.OAUTH_REDIRECT_URI;
+      delete process.env.OAUTH_REVOCATION_URL;
+    });
+
+    it('should resolve env vars in authorization_url and token_url', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          authorization_url: '${OAUTH_AUTH_URL}',
+          token_url: '${OAUTH_TOKEN_URL}',
+          client_id: 'my-client',
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.authorization_url).toBe(OAUTH_AUTH_URL);
+        expect(result.data.oauth.token_url).toBe(OAUTH_TOKEN_URL);
+      }
+    });
+
+    it('should resolve env vars in redirect_uri', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'sse',
+        url: 'https://mcp-server.com/sse',
+        oauth: {
+          redirect_uri: '${OAUTH_REDIRECT_URI}',
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.redirect_uri).toBe(OAUTH_REDIRECT_URI);
+      }
+    });
+
+    it('should resolve env vars in revocation_endpoint', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          revocation_endpoint: '${OAUTH_REVOCATION_URL}',
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.revocation_endpoint).toBe(OAUTH_REVOCATION_URL);
+      }
+    });
+
+    it('should accept plain OAuth URLs without env vars', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          authorization_url: 'https://auth.direct.com/authorize',
+          token_url: 'https://auth.direct.com/token',
+          redirect_uri: 'https://app.direct.com/callback',
+          revocation_endpoint: 'https://auth.direct.com/revoke',
+          client_id: 'my-client',
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject invalid URLs after env var resolution', () => {
+      process.env.OAUTH_BAD_URL = 'not-a-url';
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          authorization_url: '${OAUTH_BAD_URL}',
+        },
+      });
+      expect(result.success).toBe(false);
+      delete process.env.OAUTH_BAD_URL;
+    });
+
+    it('should pass through undefined when OAuth URL fields are omitted', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: { scope: 'openid' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.authorization_url).toBeUndefined();
+        expect(result.data.oauth.token_url).toBeUndefined();
+        expect(result.data.oauth.redirect_uri).toBeUndefined();
+        expect(result.data.oauth.revocation_endpoint).toBeUndefined();
+      }
+    });
+  });
+
+  describe('iconPath', () => {
+    it('accepts an over-limit iconPath so editing a server with a pre-existing oversized icon is not rejected (the cap is enforced server-side by sanitizeMcpIconPath, not at parse time)', () => {
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        iconPath: `data:image/png;base64,${'A'.repeat(MAX_MCP_ICON_PATH_LENGTH + 1000)}`,
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('env variable rejection', () => {
     it('should reject SSE URLs containing env variable patterns', () => {
       const result = MCPServerUserInputSchema.safeParse({
@@ -96,6 +269,58 @@ describe('MCP schemas', () => {
         url: 'ws://attacker.com/?secret=${FAKE_SECRET}',
       });
       expect(result.success).toBe(false);
+    });
+
+    it('should reject OAuth authorization_url containing env variable patterns', () => {
+      process.env.FAKE_SECRET = 'leaked-secret-value';
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          authorization_url: 'https://attacker.example/authorize?k=${FAKE_SECRET}',
+        },
+      });
+      expect(result.success).toBe(false);
+      delete process.env.FAKE_SECRET;
+    });
+
+    it('should reject OAuth token_url containing env variable patterns', () => {
+      process.env.FAKE_SECRET = 'leaked-secret-value';
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          token_url: 'https://attacker.example/token?k=${FAKE_SECRET}',
+        },
+      });
+      expect(result.success).toBe(false);
+      delete process.env.FAKE_SECRET;
+    });
+
+    it('should reject OAuth redirect_uri containing env variable patterns', () => {
+      process.env.FAKE_SECRET = 'leaked-secret-value';
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          redirect_uri: 'https://attacker.example/callback?k=${FAKE_SECRET}',
+        },
+      });
+      expect(result.success).toBe(false);
+      delete process.env.FAKE_SECRET;
+    });
+
+    it('should reject OAuth revocation_endpoint containing env variable patterns', () => {
+      process.env.FAKE_SECRET = 'leaked-secret-value';
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          revocation_endpoint: 'https://attacker.example/revoke?k=${FAKE_SECRET}',
+        },
+      });
+      expect(result.success).toBe(false);
+      delete process.env.FAKE_SECRET;
     });
   });
 

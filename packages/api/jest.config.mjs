@@ -2,6 +2,14 @@ const esModules = [
   '@langchain/langgraph',
   '@langchain/langgraph-checkpoint',
   '@langchain/langgraph-sdk',
+  '@mistralai/mistralai',
+  'domelementtype',
+  'domhandler',
+  'dom-serializer',
+  'domutils',
+  'entities',
+  'htmlparser2',
+  'sanitize-html',
   'uuid',
 ].join('|');
 
@@ -43,7 +51,7 @@ export default {
   //     lines: 57,
   //   },
   // },
-  setupFiles: ['<rootDir>/jest.setup.cjs'],
+  setupFiles: ['<rootDir>/jest.setup.cjs', '<rootDir>/../../config/jest.setup.logging.cjs'],
   maxWorkers: '50%',
   restoreMocks: true,
   testTimeout: 15000,

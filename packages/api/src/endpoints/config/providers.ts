@@ -2,7 +2,8 @@ import { Providers } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { BaseInitializeParams, InitializeResultBase } from '~/types';
+import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
+import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
 import { initializeCustom } from '../custom/initialize';
@@ -13,7 +14,7 @@ import { getCustomEndpointConfig } from '~/app/config';
 /**
  * Type for initialize functions
  */
-export type InitializeFn = (params: BaseInitializeParams) => Promise<InitializeResultBase>;
+export type InitializeFn = (params: ProviderInitializeParams) => Promise<InitializeResultBase>;
 
 /**
  * Check if the provider is a known custom provider
@@ -191,11 +192,23 @@ export function getProviderConfig({
           `Provider ${provider} is ambiguous: multiple custom endpoints match case-insensitively (${names}). Rename one or use the exact-case provider value.`,
         );
       }
-      customEndpointConfig = matches[0];
+      customEndpointConfig = matches[0] && resolveCustomEndpointSecrets(matches[0]);
     }
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);
     }
+  }
+
+  /**
+   * Custom endpoints default to the OpenAI-compatible client. An explicit
+   * `provider: anthropic` routes them through the native Anthropic `/v1/messages`
+   * client (`initializeCustom` builds the right config). Applied here — after all
+   * `customEndpointConfig` resolution — so it also wins when the endpoint name
+   * collides with a known custom-provider (e.g. `openrouter`), ensuring
+   * `overrideProvider`-derived values (token/context budget) use the Anthropic map.
+   */
+  if (customEndpointConfig?.provider === EModelEndpoint.anthropic) {
+    overrideProvider = Providers.ANTHROPIC;
   }
 
   return {

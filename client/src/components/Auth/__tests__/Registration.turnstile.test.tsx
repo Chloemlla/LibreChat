@@ -40,6 +40,7 @@ jest.mock('@librechat/client', () => {
     SecretInput: React.forwardRef(({ label: _label, ...props }, ref) =>
       React.createElement('input', { ...props, ref, type: 'password' }),
     ),
+    Input: React.forwardRef((props, ref) => React.createElement('input', { ...props, ref })),
     Spinner: () => React.createElement('div', { 'data-testid': 'spinner' }, 'Loading...'),
     Button: ({ children, ...props }) => React.createElement('button', props, children),
     isDark: (theme: string) => theme === 'dark',

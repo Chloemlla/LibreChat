@@ -1,0 +1,85 @@
+name: Fork Verification
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/merge-librechat-pr17-*'
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: '--max-old-space-size=6144'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+  HUSKY: '0'
+
+jobs:
+  build:
+    name: Build and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+      - run: npm ci --no-audit
+      - name: Build all workspaces and frontend
+        run: npm run frontend
+      - name: Typecheck all TypeScript workspaces
+        shell: bash
+        run: |
+          result=0
+          for workspace in packages/data-provider packages/data-schemas packages/api packages/client client; do
+            echo "::group::Typecheck $workspace"
+            (cd "$workspace" && npx tsc --noEmit) || result=1
+            echo '::endgroup::'
+          done
+          exit "$result"
+
+  regression:
+    name: Regression (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workspace: api
+            tests: >-
+              server/middleware/__tests__/validateTurnstile.test.js
+              server/routes/__tests__/config.spec.js
+              server/services/Config/loadCustomConfig.spec.js
+              server/routes/oauth.test.js
+          - workspace: packages/data-schemas
+            tests: src/app/turnstile.spec.ts src/models/oauth.spec.ts
+          - workspace: packages/api
+            tests: src/oauth src/app/environment.spec.ts
+          - workspace: client
+            tests: >-
+              src/components/Auth/__tests__/Registration.turnstile.test.tsx
+              src/components/Audio/__tests__/VoicePreview.spec.tsx
+              src/components/Chat/__tests__/Footer.spec.tsx
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+      - run: npm ci --no-audit
+      - name: Build shared workspaces
+        run: npm run build:packages
+      - name: Run merge regression tests
+        working-directory: ${{ matrix.workspace }}
+        env:
+          NODE_ENV: test
+        run: npx jest --ci --runInBand --coverage=false ${{ matrix.tests }}

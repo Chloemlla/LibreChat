@@ -12,6 +12,7 @@ import store from '~/store';
 
 type VoicePreviewProps = {
   voices: Array<string | VoiceOption>;
+  disabled?: boolean;
 };
 
 const getVoiceValue = (voice?: string | VoiceOption) => {
@@ -29,7 +30,7 @@ const createFormData = (text: string, voice: string) => {
   return formData;
 };
 
-export default function VoicePreview({ voices }: VoicePreviewProps) {
+export default function VoicePreview({ voices, disabled = false }: VoicePreviewProps) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -193,7 +194,7 @@ export default function VoicePreview({ voices }: VoicePreviewProps) {
     return localize('com_ui_preview_voice');
   }, [isLoading, isPlaying, localize]);
 
-  const isDisabled = textToSpeech !== true || !hasVoices || isLoading;
+  const isDisabled = disabled || textToSpeech !== true || !hasVoices || isLoading;
 
   const renderIcon = () => {
     if (isLoading) {

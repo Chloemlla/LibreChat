@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import yaml from 'js-yaml';
+import crypto from 'crypto';
 import { Types } from 'mongoose';
+import { mergeCodeEnvRef, type CodeEnvRef, type CodeEnvRefMap } from 'librechat-data-provider';
 import {
   logger,
   partitionIssues,
@@ -13,9 +14,9 @@ import {
   validateSkillFrontmatter,
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
+  normalizeSkillFrontmatterKeys,
 } from '@librechat/data-schemas';
 import type { ValidationIssue } from '@librechat/data-schemas';
-import type { CodeEnvRef } from 'librechat-data-provider';
 import { parseFrontmatter, guessMimeType } from './import';
 
 export const DEPLOYMENT_SKILLS_DIR_ENV = 'DEPLOYMENT_SKILLS_DIR';
@@ -24,8 +25,15 @@ export const DEPLOYMENT_SKILL_SOURCE = 'deployment';
 export const DEPLOYMENT_SKILL_FILE_SOURCE = 'deployment';
 
 const SKILL_MD = 'SKILL.md';
-const DEPLOYMENT_AUTHOR_ID = new Types.ObjectId('de9100000000000000000000');
 const MAX_CACHED_TEXT_BYTES = 512 * 1024;
+
+let deploymentAuthorId: Types.ObjectId | undefined;
+
+/** Constructed on demand so importing this module never depends on a live mongoose binding. */
+function getDeploymentAuthorId(): Types.ObjectId {
+  deploymentAuthorId ??= new Types.ObjectId('de9100000000000000000000');
+  return deploymentAuthorId;
+}
 
 type SkillId = Types.ObjectId | string;
 
@@ -45,6 +53,7 @@ export type DeploymentSkillFile = {
   content?: string;
   isBinary?: boolean;
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -64,7 +73,7 @@ export type DeploymentSkill = {
   authorName: string;
   version: number;
   source: typeof DEPLOYMENT_SKILL_SOURCE;
-  sourceMetadata: { deployment: true; directory: string };
+  sourceMetadata: { deployment: true; directory: string; plugin?: string };
   fileCount: number;
   alwaysApply: boolean;
   isPublic: true;
@@ -145,7 +154,10 @@ type ListAlwaysApplyResult = {
   after?: string | null;
 };
 
-type SkillFileRow = Omit<DeploymentSkillFile, 'codeEnvRef' | 'content' | 'isBinary'> & {
+type SkillFileRow = Omit<
+  DeploymentSkillFile,
+  'codeEnvRef' | 'codeEnvRefs' | 'content' | 'isBinary'
+> & {
   storageKey?: string;
   storageRegion?: string;
   tenantId?: string;
@@ -153,6 +165,7 @@ type SkillFileRow = Omit<DeploymentSkillFile, 'codeEnvRef' | 'content' | 'isBina
 
 type SkillFileContentRow = SkillFileRow & {
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   content?: string;
   isBinary?: boolean;
 };
@@ -182,10 +195,15 @@ export type DeploymentSkillBaseMethods = {
 };
 
 type Cursor = { updatedAt: Date; _id: Types.ObjectId };
+type CollisionFilterResult<T> = {
+  rows: T[];
+};
 
 type LoadDeploymentSkillsOptions = {
   projectRoot?: string;
   env?: NodeJS.ProcessEnv;
+  /** Skills contributed by Agent Plugins packages, which yield to the deployment directory on a name conflict. */
+  additionalSkills?: DeploymentSkill[];
 };
 
 type DirectoryResolution = {
@@ -193,9 +211,16 @@ type DirectoryResolution = {
   explicitlyConfigured: boolean;
 };
 
-type LoadedSkillDirectory = {
+export type LoadedSkillDirectory = {
   directory: string;
   relativeDirectory: string;
+};
+
+export type SkillIdentity = {
+  /** Namespace for the deterministic skill id; keeps same-named skills from different sources distinct. */
+  idNamespace?: string;
+  /** Agent Plugins package that contributed the skill, when it came from one. */
+  plugin?: string;
 };
 
 export class DeploymentSkillRegistry {
@@ -249,6 +274,17 @@ export class DeploymentSkillRegistry {
       return null;
     }
     return skill;
+  }
+
+  namesByAccess(accessibleIds: Types.ObjectId[]): Set<string> {
+    const accessibleSet = new Set(accessibleIds.map((id) => id.toString()));
+    const names = new Set<string>();
+    for (const skill of this.list()) {
+      if (accessibleSet.has(skill._id.toString())) {
+        names.add(skill.name);
+      }
+    }
+    return names;
   }
 
   listByAccess(params: ListSkillsByAccessParams): DeploymentSkill[] {
@@ -309,13 +345,14 @@ export class DeploymentSkillRegistry {
         dbUpdates.push(update);
         continue;
       }
-      file.codeEnvRef = update.codeEnvRef;
+      Object.assign(file, mergeCodeEnvRef(file, update.codeEnvRef));
     }
     return dbUpdates;
   }
 }
 
 let registry = new DeploymentSkillRegistry(null, []);
+const warnedDeploymentNameCollisions = new Set<string>();
 
 export function getDeploymentSkillRegistry(): DeploymentSkillRegistry {
   return registry;
@@ -394,6 +431,7 @@ export async function initializeDeploymentSkills(
   registry = await loadDeploymentSkillsFromDirectory(resolved.directory, {
     projectRoot: options.projectRoot ?? process.cwd(),
     explicitlyConfigured: resolved.explicitlyConfigured,
+    ...(options.additionalSkills !== undefined && { additionalSkills: options.additionalSkills }),
   });
   const count = registry.list().length;
   if (count > 0) {
@@ -406,10 +444,39 @@ export async function initializeDeploymentSkills(
   return registry;
 }
 
+/**
+ * Plugin-contributed skills yield to the deployment directory on a name
+ * conflict: the operator's own `skill/` tree is the more specific source, and a
+ * conflict must not fail startup the way a duplicate inside that tree does.
+ */
+function appendPluginSkills(
+  skills: DeploymentSkill[],
+  additionalSkills: DeploymentSkill[],
+): DeploymentSkill[] {
+  const claimed = new Set(skills.map((skill) => skill.name));
+  const accepted: DeploymentSkill[] = [];
+  for (const skill of additionalSkills) {
+    if (claimed.has(skill.name)) {
+      logger.warn(
+        `[deploymentSkills] Plugin skill "${skill.name}" conflicts with a deployment skill and was skipped`,
+      );
+      continue;
+    }
+    claimed.add(skill.name);
+    accepted.push(skill);
+  }
+  return accepted;
+}
+
 export async function loadDeploymentSkillsFromDirectory(
   directory: string,
-  options: { projectRoot?: string; explicitlyConfigured?: boolean } = {},
+  options: {
+    projectRoot?: string;
+    explicitlyConfigured?: boolean;
+    additionalSkills?: DeploymentSkill[];
+  } = {},
 ): Promise<DeploymentSkillRegistry> {
+  const additionalSkills = options.additionalSkills ?? [];
   let rootStat: fs.Stats;
   try {
     rootStat = await fs.promises.stat(directory);
@@ -418,7 +485,7 @@ export async function loadDeploymentSkillsFromDirectory(
       (error as NodeJS.ErrnoException).code === 'ENOENT' &&
       options.explicitlyConfigured !== true
     ) {
-      return new DeploymentSkillRegistry(directory, []);
+      return new DeploymentSkillRegistry(directory, additionalSkills);
     }
     throw new Error(`Deployment skills directory not found: ${directory}`);
   }
@@ -428,10 +495,11 @@ export async function loadDeploymentSkillsFromDirectory(
 
   const skillDirectories = await findSkillDirectories(directory, options.projectRoot ?? directory);
   const skills = await Promise.all(
-    skillDirectories.map((skillDirectory) => loadDeploymentSkill(skillDirectory, directory)),
+    skillDirectories.map((skillDirectory) => loadSkillFromDirectory(skillDirectory, directory)),
   );
   validateUniqueNames(skills);
-  return new DeploymentSkillRegistry(directory, skills.sort(compareBySkillCursor));
+  const merged = [...skills, ...appendPluginSkills(skills, additionalSkills)];
+  return new DeploymentSkillRegistry(directory, merged.sort(compareBySkillCursor));
 }
 
 export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethods>(
@@ -451,14 +519,14 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
       accessibleIds: Types.ObjectId[],
       options?: SkillLookupOptions,
     ): Promise<SkillDetailRow | null> => {
+      const deployment = registry.getByName(name, accessibleIds, options);
+      if (deployment) {
+        return toSkillDetailRow(deployment);
+      }
       const dbSkill = base.getSkillByName
         ? await base.getSkillByName(name, stripDeploymentIds(accessibleIds), options)
         : null;
-      const deployment = registry.getByName(name, accessibleIds, options);
-      return pickPreferredSkill(
-        [dbSkill, deployment ? toSkillDetailRow(deployment) : null],
-        options,
-      );
+      return dbSkill;
     },
     listSkillsByAccess: async (
       params: ListSkillsByAccessParams,
@@ -469,9 +537,20 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
             accessibleIds: stripDeploymentIds(params.accessibleIds),
           })
         : { skills: [], has_more: false, after: null };
+      const deploymentNames = registry.namesByAccess(params.accessibleIds);
+      const filteredDb = filterDeploymentNameCollisions(dbResult.skills, deploymentNames, 'list');
+      const dbPageBoundary = getDbPageBoundary(dbResult);
+      const deploymentRows = limitRowsToDbPageBoundary(
+        registry.listByAccess(params).map(toSkillSummaryRow),
+        dbPageBoundary,
+      );
       return mergeSkillPage({
-        dbResult,
-        deploymentRows: registry.listByAccess(params).map(toSkillSummaryRow),
+        dbResult: {
+          ...dbResult,
+          skills: filteredDb.rows,
+        },
+        dbPageBoundary,
+        deploymentRows,
         limit: params.limit,
       });
     },
@@ -484,9 +563,23 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
             accessibleIds: stripDeploymentIds(params.accessibleIds),
           })
         : { skills: [], has_more: false, after: null };
+      const deploymentNames = registry.namesByAccess(params.accessibleIds);
+      const filteredDb = filterDeploymentNameCollisions(
+        dbResult.skills,
+        deploymentNames,
+        'always-apply',
+      );
+      const dbPageBoundary = getDbPageBoundary(dbResult);
       return mergeAlwaysApplyPage({
-        dbResult,
-        deploymentRows: registry.listAlwaysApply(params).map(toAlwaysApplyRow),
+        dbResult: {
+          ...dbResult,
+          skills: filteredDb.rows,
+        },
+        dbPageBoundary,
+        deploymentRows: limitRowsToDbPageBoundary(
+          registry.listAlwaysApply(params).map(toAlwaysApplyRow),
+          dbPageBoundary,
+        ),
         limit: params.limit,
       });
     },
@@ -575,9 +668,15 @@ async function findSkillDirectories(
   return directories;
 }
 
-async function loadDeploymentSkill(
+/**
+ * Loads one `SKILL.md` directory into a deployment skill. Shared by the
+ * deployment skills directory and Agent Plugins packages, which differ only in
+ * how the skill is identified and attributed.
+ */
+export async function loadSkillFromDirectory(
   skillDirectory: LoadedSkillDirectory,
   rootDirectory: string,
+  identity: SkillIdentity = {},
 ): Promise<DeploymentSkill> {
   const skillMdPath = path.join(skillDirectory.directory, SKILL_MD);
   const [content, stat] = await Promise.all([
@@ -625,7 +724,7 @@ async function loadDeploymentSkill(
   }
 
   const derived = deriveStructuredFrontmatterFields(frontmatter);
-  const skillId = stableObjectId(`deployment-skill:${name}`);
+  const skillId = stableObjectId(`${identity.idNamespace ?? 'deployment-skill'}:${name}`);
   const files = await loadDeploymentSkillFiles({
     skillId,
     skillName: name,
@@ -639,13 +738,14 @@ async function loadDeploymentSkill(
     body: content,
     frontmatter,
     category: '',
-    author: DEPLOYMENT_AUTHOR_ID,
+    author: getDeploymentAuthorId(),
     authorName: 'Deployment',
     version: 1,
     source: DEPLOYMENT_SKILL_SOURCE,
     sourceMetadata: {
       deployment: true,
       directory: skillDirectory.relativeDirectory,
+      ...(identity.plugin !== undefined && { plugin: identity.plugin }),
     },
     fileCount: files.length,
     alwaysApply: parsed.alwaysApply ?? false,
@@ -696,7 +796,7 @@ async function loadDeploymentSkillFiles({
         bytes: stat.size,
         category: inferSkillFileCategory(relativePath),
         isExecutable: false,
-        author: DEPLOYMENT_AUTHOR_ID,
+        author: getDeploymentAuthorId(),
         createdAt: stat.birthtime,
         updatedAt: stat.mtime,
         ...cache,
@@ -775,7 +875,11 @@ function parseStructuredFrontmatter(
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { error: `${SKILL_MD} frontmatter must be a YAML mapping.` };
     }
-    return { frontmatter: parsed as Record<string, unknown> };
+    const normalized = normalizeSkillFrontmatterKeys(parsed as Record<string, unknown>);
+    if ('error' in normalized) {
+      return { error: `Invalid ${SKILL_MD} frontmatter: ${normalized.error}` };
+    }
+    return { frontmatter: normalized.frontmatter };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { error: `Invalid ${SKILL_MD} frontmatter: ${message}` };
@@ -794,10 +898,12 @@ function validateUniqueNames(skills: DeploymentSkill[]): void {
 
 function mergeSkillPage({
   dbResult,
+  dbPageBoundary,
   deploymentRows,
   limit,
 }: {
   dbResult: ListSkillsByAccessResult;
+  dbPageBoundary?: Cursor | null;
   deploymentRows: SkillSummaryRow[];
   limit: number;
 }): ListSkillsByAccessResult {
@@ -805,19 +911,22 @@ function mergeSkillPage({
   const merged = [...deploymentRows, ...dbResult.skills].sort(compareBySkillCursor);
   const sliced = merged.slice(0, boundedLimit);
   const hasMore = merged.length > boundedLimit || dbResult.has_more === true;
+  const cursorRow = getMergedPageCursor(sliced, boundedLimit, dbPageBoundary);
   return {
     skills: sliced,
     has_more: hasMore,
-    after: hasMore && sliced.length > 0 ? encodeCursor(sliced[sliced.length - 1]) : null,
+    after: hasMore && cursorRow ? encodeCursor(cursorRow) : null,
   };
 }
 
 function mergeAlwaysApplyPage({
   dbResult,
+  dbPageBoundary,
   deploymentRows,
   limit,
 }: {
   dbResult: ListAlwaysApplyResult;
+  dbPageBoundary?: Cursor | null;
   deploymentRows: AlwaysApplySkillRow[];
   limit: number;
 }): ListAlwaysApplyResult {
@@ -825,36 +934,49 @@ function mergeAlwaysApplyPage({
   const merged = [...deploymentRows, ...dbResult.skills].sort(compareBySkillCursor);
   const sliced = merged.slice(0, boundedLimit);
   const hasMore = merged.length > boundedLimit || dbResult.has_more === true;
+  const cursorRow = getMergedPageCursor(sliced, boundedLimit, dbPageBoundary);
   return {
     skills: sliced,
     has_more: hasMore,
-    after: hasMore && sliced.length > 0 ? encodeCursor(sliced[sliced.length - 1]) : null,
+    after: hasMore && cursorRow ? encodeCursor(cursorRow) : null,
   };
 }
 
-function pickPreferredSkill(
-  rows: Array<SkillDetailRow | null>,
-  options?: SkillLookupOptions,
-): SkillDetailRow | null {
-  const candidates = rows.filter((row): row is SkillDetailRow => row != null);
-  if (candidates.length === 0) {
-    return null;
+function getMergedPageCursor<T extends Pick<SkillSummaryRow, '_id' | 'updatedAt'>>(
+  sliced: T[],
+  boundedLimit: number,
+  dbPageBoundary?: Cursor | null,
+): Pick<SkillSummaryRow, '_id' | 'updatedAt'> | null {
+  const lastReturned = sliced.length > 0 ? sliced[sliced.length - 1] : null;
+  if (sliced.length < boundedLimit && dbPageBoundary) {
+    return dbPageBoundary;
   }
-  const preferred = candidates.filter((row) => matchesLookupPreference(row, options));
-  return (preferred.length > 0 ? preferred : candidates).sort(compareBySkillCursor)[0];
+  return lastReturned;
 }
 
-function matchesLookupPreference(
-  row: Pick<SkillSummaryRow, 'disableModelInvocation' | 'userInvocable'>,
-  options?: SkillLookupOptions,
-): boolean {
-  if (options?.preferUserInvocable === true && row.userInvocable === false) {
-    return false;
+function getDbPageBoundary<T extends Pick<SkillSummaryRow, '_id' | 'updatedAt'>>(dbResult: {
+  skills: T[];
+  has_more?: boolean;
+  after?: string | null;
+}): Cursor | null {
+  if (dbResult.has_more !== true) {
+    return null;
   }
-  if (options?.preferModelInvocable === true && row.disableModelInvocation === true) {
-    return false;
+  const last = dbResult.skills.length > 0 ? dbResult.skills[dbResult.skills.length - 1] : null;
+  if (last?.updatedAt) {
+    return { _id: last._id, updatedAt: last.updatedAt };
   }
-  return true;
+  return decodeCursor(dbResult.after);
+}
+
+function limitRowsToDbPageBoundary<T extends Pick<SkillSummaryRow, '_id' | 'updatedAt'>>(
+  rows: T[],
+  dbPageBoundary: Cursor | null,
+): T[] {
+  if (!dbPageBoundary) {
+    return rows;
+  }
+  return rows.filter((row) => compareBySkillCursor(row, dbPageBoundary) <= 0);
 }
 
 function toSkillSummaryRow(skill: DeploymentSkill): SkillSummaryRow {
@@ -880,7 +1002,13 @@ function toAlwaysApplyRow(skill: DeploymentSkill): AlwaysApplySkillRow {
 }
 
 function toSkillFileRow(file: DeploymentSkillFile): SkillFileRow {
-  const { codeEnvRef: _codeEnvRef, content: _content, isBinary: _isBinary, ...row } = file;
+  const {
+    codeEnvRef: _codeEnvRef,
+    codeEnvRefs: _codeEnvRefs,
+    content: _content,
+    isBinary: _isBinary,
+    ...row
+  } = file;
   return row;
 }
 
@@ -888,6 +1016,7 @@ function toSkillFileContentRow(file: DeploymentSkillFile): SkillFileContentRow {
   return {
     ...toSkillFileRow(file),
     codeEnvRef: file.codeEnvRef,
+    codeEnvRefs: file.codeEnvRefs,
     content: file.content,
     isBinary: file.isBinary,
   };
@@ -900,6 +1029,38 @@ function stripDeploymentIds(ids: Types.ObjectId[]): Types.ObjectId[] {
 function hasAccessibleId(ids: Types.ObjectId[], skillId: Types.ObjectId): boolean {
   const key = skillId.toString();
   return ids.some((id) => id.toString() === key);
+}
+
+function filterDeploymentNameCollisions<
+  T extends { name: string } & Pick<SkillSummaryRow, '_id' | 'updatedAt'>,
+>(rows: T[], deploymentNames: Set<string>, context: string): CollisionFilterResult<T> {
+  if (rows.length === 0 || deploymentNames.size === 0) {
+    return { rows };
+  }
+  const hiddenNames = new Set<string>();
+  const filtered = rows.filter((row) => {
+    if (!deploymentNames.has(row.name)) {
+      return true;
+    }
+    hiddenNames.add(row.name);
+    return false;
+  });
+  if (hiddenNames.size > 0) {
+    const unwarnedNames = Array.from(hiddenNames).filter((name) => {
+      const key = `${context}:${name}`;
+      if (warnedDeploymentNameCollisions.has(key)) {
+        return false;
+      }
+      warnedDeploymentNameCollisions.add(key);
+      return true;
+    });
+    if (unwarnedNames.length > 0) {
+      logger.warn(
+        `[deploymentSkills] Hid persisted ${context} skill row(s) shadowed by deployment skill name(s): ${unwarnedNames.join(', ')}`,
+      );
+    }
+  }
+  return { rows: filtered };
 }
 
 function compareBySkillCursor(

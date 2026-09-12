@@ -93,6 +93,27 @@ describe('loadCustomConfig', () => {
     expect(result).toBeNull();
   });
 
+  it('applies camel-cased YAML overrides without consuming code runtime settings', async () => {
+    const welcomeKey = 'LIBRECHAT_INTERFACE_CUSTOMWELCOME';
+    const runtimeKey = 'LIBRECHAT_CODE_BASEURL_STATEFUL';
+    const savedWelcome = process.env[welcomeKey];
+    const savedRuntime = process.env[runtimeKey];
+    process.env[welcomeKey] = 'Welcome to HappyChat';
+    process.env[runtimeKey] = 'https://code.example.com';
+    loadYaml.mockReturnValueOnce({ version: '1.0', cache: true });
+
+    try {
+      const result = await loadCustomConfig(false);
+      expect(result.interface.customWelcome).toBe('Welcome to HappyChat');
+      expect(result).not.toHaveProperty('code');
+    } finally {
+      if (savedWelcome === undefined) delete process.env[welcomeKey];
+      else process.env[welcomeKey] = savedWelcome;
+      if (savedRuntime === undefined) delete process.env[runtimeKey];
+      else process.env[runtimeKey] = savedRuntime;
+    }
+  });
+
   it('should return null for an invalid local config file', async () => {
     process.env.CONFIG_PATH = 'localConfig.yaml';
     loadYaml.mockReturnValueOnce(null);
@@ -232,6 +253,33 @@ describe('loadCustomConfig', () => {
     expect(logger.info).toHaveBeenCalledWith('Custom config file loaded:');
     expect(logger.info).toHaveBeenCalledWith(JSON.stringify(mockConfig, null, 2));
     expect(logger.debug).toHaveBeenCalledWith('Custom config:', mockConfig);
+  });
+
+  it('masks literal Langfuse header credentials in the startup log', async () => {
+    const mockConfig = {
+      version: '1.0',
+      cache: true,
+      langfuse: {
+        enabled: true,
+        publicKey: 'pk-lf-1',
+        headers: {
+          'CF-Access-Client-Id': 'client-id',
+          'CF-Access-Client-Secret': 'gateway-credential',
+        },
+      },
+    };
+    process.env.CONFIG_PATH = 'validConfig.yaml';
+    loadYaml.mockReturnValueOnce(mockConfig);
+
+    const result = await loadCustomConfig();
+
+    const logged = logger.info.mock.calls.map(([value]) => value).join('\n');
+    const debugged = JSON.stringify(logger.debug.mock.calls);
+    expect(logged).not.toContain('gateway-credential');
+    expect(debugged).not.toContain('gateway-credential');
+    expect(logged).toContain('***');
+    // The masking is for logging only — the live config keeps real values.
+    expect(result.langfuse.headers['CF-Access-Client-Secret']).toBe('gateway-credential');
   });
 
   describe('parseCustomParams', () => {

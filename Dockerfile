@@ -1,4 +1,4 @@
-# v0.8.6
+# v0.8.8-rc2
 
 # Base node image
 FROM node:24.16.0-alpine AS node
@@ -36,7 +36,8 @@ RUN \
     # Allow mounting of these files, which have no default
     touch .env ; \
     # Create directories for the volumes to inherit the correct permissions
-    mkdir -p /app/client/public/images /app/logs /app/uploads /app/skill ; \
+    mkdir -p /app/client/public/images /app/logs /app/uploads /app/skill /app/data ; \
+    chmod 1777 /app/data ; \
     npm config set fetch-retry-maxtimeout 600000 ; \
     npm config set fetch-retries 5 ; \
     npm config set fetch-retry-mintimeout 15000 ; \
@@ -56,8 +57,8 @@ COPY --chown=node:node . .
 
 RUN \
     # React client build with configurable memory
-    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
-    npm prune --production; \
+    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \
+    npm prune --omit=dev --legacy-peer-deps && \
     npm cache clean --force
 
 # Optional build metadata surfaced in Settings -> About for support triage.

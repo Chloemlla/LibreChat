@@ -26,11 +26,13 @@ const renderVoicePreview = ({
   playbackRate = null,
   voice = 'Voice A',
   voices = [{ label: 'Voice A', value: 'Voice A' }],
+  disabled = false,
 }: {
   engine?: TTSEndpoints;
   playbackRate?: number | null;
   voice?: string;
   voices?: Array<string | { label: string; value: string }>;
+  disabled?: boolean;
 } = {}) => {
   return render(
     <RecoilRoot
@@ -41,7 +43,7 @@ const renderVoicePreview = ({
         set(store.playbackRate, playbackRate);
       }}
     >
-      <VoicePreview voices={voices} />
+      <VoicePreview voices={voices} disabled={disabled} />
     </RecoilRoot>,
   );
 };
@@ -101,6 +103,19 @@ describe('VoicePreview', () => {
 
     expect(window.speechSynthesis.cancel).not.toHaveBeenCalled();
   });
+
+  it.each([TTSEndpoints.browser, TTSEndpoints.external])(
+    'does not start a disabled %s preview',
+    (engine) => {
+      const { getByTestId } = renderVoicePreview({ engine, disabled: true });
+      const button = getByTestId('VoicePreviewButton');
+
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
+    },
+  );
 
   it('submits the selected voice for external previews', () => {
     renderVoicePreview({

@@ -9,6 +9,8 @@ import type {
 } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 
+import { normalizeLimit, queryString } from '~/utils';
+
 const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 
@@ -37,26 +39,8 @@ type ProjectHandlerDependencies = Pick<
 
 const getUserId = (req: ProjectRequest): string => req.user?.id ?? req.user?._id?.toString() ?? '';
 
-const queryString = (value: Request['query'][string]): string | undefined => {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return queryString(value[0]);
-  }
-  return undefined;
-};
-
 const normalizeString = (value: string | null | undefined): string =>
   typeof value === 'string' ? value.trim() : '';
-
-const normalizeLimit = (value: Request['query'][string]): number => {
-  const limit = parseInt(queryString(value) ?? '', 10);
-  if (!Number.isFinite(limit)) {
-    return 25;
-  }
-  return Math.min(Math.max(limit, 1), 100);
-};
 
 const normalizeSortBy = (value: Request['query'][string]): ChatProjectSortBy | undefined => {
   const sortBy = queryString(value);
@@ -84,8 +68,15 @@ const createProjectInput = (req: ProjectRequest): CreateChatProjectInput | null 
   };
 };
 
-export function createProjectHandlers(deps: ProjectHandlerDependencies) {
-  async function listProjects(req: ProjectRequest, res: Response) {
+export function createProjectHandlers(deps: ProjectHandlerDependencies): {
+  listProjects: (req: ProjectRequest, res: Response) => Promise<Response>;
+  createProject: (req: ProjectRequest, res: Response) => Promise<Response>;
+  assignConversationToProject: (req: ProjectRequest, res: Response) => Promise<Response>;
+  getProject: (req: ProjectRequest, res: Response) => Promise<Response>;
+  updateProject: (req: ProjectRequest, res: Response) => Promise<Response>;
+  deleteProject: (req: ProjectRequest, res: Response) => Promise<Response>;
+} {
+  async function listProjects(req: ProjectRequest, res: Response): Promise<Response> {
     try {
       const result = await deps.listChatProjects(getUserId(req), {
         cursor: queryString(req.query.cursor),
@@ -101,7 +92,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies) {
     }
   }
 
-  async function createProject(req: ProjectRequest, res: Response) {
+  async function createProject(req: ProjectRequest, res: Response): Promise<Response> {
     const input = createProjectInput(req);
     if (!input) {
       return res.status(400).json({ error: 'name is required' });
@@ -116,7 +107,10 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies) {
     }
   }
 
-  async function assignConversationToProject(req: ProjectRequest, res: Response) {
+  async function assignConversationToProject(
+    req: ProjectRequest,
+    res: Response,
+  ): Promise<Response> {
     const { conversationId } = req.params;
     const projectId = req.body?.projectId ?? null;
 
@@ -143,7 +137,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies) {
     }
   }
 
-  async function getProject(req: ProjectRequest, res: Response) {
+  async function getProject(req: ProjectRequest, res: Response): Promise<Response> {
     const { projectId } = req.params;
     if (!isValidObjectIdString(projectId)) {
       return res.status(404).json({ error: PROJECT_NOT_FOUND });
@@ -161,7 +155,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies) {
     }
   }
 
-  async function updateProject(req: ProjectRequest, res: Response) {
+  async function updateProject(req: ProjectRequest, res: Response): Promise<Response> {
     const { projectId } = req.params;
     if (!isValidObjectIdString(projectId)) {
       return res.status(404).json({ error: PROJECT_NOT_FOUND });
@@ -191,7 +185,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies) {
     }
   }
 
-  async function deleteProject(req: ProjectRequest, res: Response) {
+  async function deleteProject(req: ProjectRequest, res: Response): Promise<Response> {
     const { projectId } = req.params;
     if (!isValidObjectIdString(projectId)) {
       return res.status(404).json({ error: PROJECT_NOT_FOUND });

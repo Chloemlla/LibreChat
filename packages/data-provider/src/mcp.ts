@@ -2,6 +2,13 @@ import { z } from 'zod';
 import { TokenExchangeMethodEnum } from './types/agents';
 import { extractEnvVariable } from './utils';
 
+/**
+ * Upper bound on a stored MCP `iconPath` (URL or data URI). Enforced by
+ * `sanitizeMcpIconPath`, not a schema `.max()`, so re-submitting a server whose
+ * stored icon predates the cap clears the icon instead of rejecting the update.
+ */
+export const MAX_MCP_ICON_PATH_LENGTH = 256 * 1024;
+
 const validateOAuthClientCredentials = (
   oauth: {
     client_id?: string;
@@ -30,9 +37,17 @@ const validateOAuthClientCredentials = (
 
 const OAuthOptionsBaseSchema = z.object({
   /** OAuth authorization endpoint (optional - can be auto-discovered) */
-  authorization_url: z.string().url().optional(),
+  authorization_url: z
+    .string()
+    .transform((val) => extractEnvVariable(val))
+    .pipe(z.string().url())
+    .optional(),
   /** OAuth token endpoint (optional - can be auto-discovered) */
-  token_url: z.string().url().optional(),
+  token_url: z
+    .string()
+    .transform((val) => extractEnvVariable(val))
+    .pipe(z.string().url())
+    .optional(),
   /** OAuth client ID (optional - can use dynamic registration) */
   client_id: z.string().optional(),
   /** OAuth client secret (requires explicit authorization and token endpoints) */
@@ -40,7 +55,11 @@ const OAuthOptionsBaseSchema = z.object({
   /** OAuth scopes to request */
   scope: z.string().optional(),
   /** OAuth redirect URI (defaults to /api/mcp/{serverName}/oauth/callback) */
-  redirect_uri: z.string().url().optional(),
+  redirect_uri: z
+    .string()
+    .transform((val) => extractEnvVariable(val))
+    .pipe(z.string().url())
+    .optional(),
   /** Token exchange method */
   token_exchange_method: z.nativeEnum(TokenExchangeMethodEnum).optional(),
   /** Supported grant types (defaults to ['authorization_code', 'refresh_token']) */
@@ -91,7 +110,11 @@ const OAuthOptionsBaseSchema = z.object({
    */
   forward_audience_on_refresh: z.boolean().optional(),
   /** OAuth revocation endpoint (optional - can be auto-discovered) */
-  revocation_endpoint: z.string().url().optional(),
+  revocation_endpoint: z
+    .string()
+    .transform((val) => extractEnvVariable(val))
+    .pipe(z.string().url())
+    .optional(),
   /** OAuth revocation endpoint authentication methods supported (optional - can be auto-discovered) */
   revocation_endpoint_auth_methods_supported: z.array(z.string()).optional(),
 });
@@ -99,10 +122,14 @@ const OAuthOptionsBaseSchema = z.object({
 const OAuthOptionsSchema = OAuthOptionsBaseSchema.superRefine(validateOAuthClientCredentials);
 
 const BLOCKED_USER_OAUTH_ENDPOINT_PARAMS = ['audience', 'resource'] as const;
+const envVarPattern = /\$\{[^}]+\}/;
 
 const userOAuthEndpointUrlSchema = z
   .string()
-  .url()
+  .refine((val) => !envVarPattern.test(val), {
+    message: 'Environment variable references are not allowed in URLs',
+  })
+  .pipe(z.string().url())
   .refine(
     (value) => {
       try {
@@ -122,6 +149,8 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
   .extend({
     authorization_url: userOAuthEndpointUrlSchema.optional(),
     token_url: userOAuthEndpointUrlSchema.optional(),
+    redirect_uri: userOAuthEndpointUrlSchema.optional(),
+    revocation_endpoint: userOAuthEndpointUrlSchema.optional(),
     audience: z.never().optional(),
     forward_audience_on_refresh: z.never().optional(),
   })
@@ -132,12 +161,16 @@ const OboOptionsSchema = z.object({
   scopes: z.string().min(1),
 });
 
+export const MCP_SERVER_TITLE_PATTERN = new RegExp(
+  "^[\\p{L}\\p{N}][\\p{L}\\p{N}\\p{M}'’ -]*$",
+  'u',
+);
+export const MCP_SERVER_TITLE_ERROR =
+  'Title must start with a letter or number and can include spaces, hyphens, and apostrophes';
+
 const BaseOptionsSchema = z.object({
-  /** Display name for the MCP server - only letters, numbers, and spaces allowed */
-  title: z
-    .string()
-    .regex(/^[a-zA-Z0-9 ]+$/, 'Title can only contain letters, numbers, and spaces')
-    .optional(),
+  /** Display name for the MCP server */
+  title: z.string().regex(MCP_SERVER_TITLE_PATTERN, MCP_SERVER_TITLE_ERROR).optional(),
   /** Description of the MCP server */
   description: z.string().optional(),
   /**
@@ -152,7 +185,14 @@ const BaseOptionsSchema = z.object({
   /** Timeout (ms) for the long-lived SSE GET stream body before undici aborts it. Default: 300_000 (5 min). */
   sseReadTimeout: z.number().int().positive().optional(),
   initTimeout: z.number().int().nonnegative().optional(),
-  /** Controls visibility in chat dropdown menu (MCPSelect) */
+  /**
+   * Whether the server is offered in chat.
+   *
+   * `false` hides it from the chat dropdown (MCPSelect) AND bars it from the
+   * chat selection a request carries, so a stale or hand-written request cannot
+   * reach it either. It does not restrict agents, nor a server a model spec
+   * pins through `mcpServers` — both are the operator's own choice.
+   */
   chatMenu: z.boolean().optional(),
   /**
    * Controls server instruction behavior:
@@ -227,6 +267,33 @@ const ProxyUrlSchema = z
     },
   );
 
+const PROCESS_MCP_SERVER_FIELDS = new Set(['command', 'args', 'env', 'cwd', 'stderr']);
+
+export function isProcessMCPServerField(field: string): boolean {
+  return PROCESS_MCP_SERVER_FIELDS.has(field);
+}
+
+export function isProcessMCPServerConfig(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const config = value as Record<string, unknown>;
+  if (config.type === 'stdio') {
+    return true;
+  }
+
+  return Object.keys(config).some(isProcessMCPServerField);
+}
+
+export function hasProcessMCPServerConfig(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value).some(isProcessMCPServerConfig);
+}
+
 export const StdioOptionsSchema = BaseOptionsSchema.extend({
   type: z.literal('stdio').default('stdio'),
   obo: z.undefined().optional(),
@@ -266,6 +333,11 @@ export const StdioOptionsSchema = BaseOptionsSchema.extend({
   stderr: z
     .union([z.enum(['pipe', 'ignore', 'inherit']), z.number().int().nonnegative()])
     .optional(),
+  /**
+   * Working directory for the spawned process. Supplied by Agent Plugins
+   * packages, which resolve and contain the path before it reaches this schema.
+   */
+  cwd: z.string().optional(),
 });
 
 export const WebSocketOptionsSchema = BaseOptionsSchema.extend({
@@ -374,7 +446,6 @@ const userManagedServerFields = <T extends z.ZodObject<z.ZodRawShape>>(schema: T
     oauth: UserOAuthOptionsSchema.optional(),
   });
 
-const envVarPattern = /\$\{[^}]+\}/;
 const isWsProtocol = (val: string): boolean => /^wss?:/i.test(val);
 const isHttpProtocol = (val: string): boolean => /^https?:/i.test(val);
 

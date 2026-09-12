@@ -45,6 +45,7 @@ router.post(
   middleware.logHeaders,
   middleware.loginLimiter,
   middleware.checkBan,
+  middleware.validateEmailLogin,
   middleware.validateTurnstile,
   ldapAuth ? middleware.requireLdapAuth : middleware.requireLocalAuth,
   setBalanceConfig,
@@ -82,6 +83,7 @@ router.post(
 );
 router.post(
   '/resetPassword',
+  middleware.resetPasswordSubmissionLimiter,
   middleware.checkBan,
   middleware.validatePasswordReset,
   resetPasswordController,

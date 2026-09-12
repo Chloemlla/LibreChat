@@ -9,16 +9,13 @@ const mockCache = {
 const mockSaveConvo = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   isEnabled: (val) => val === true || val === 'true',
   sanitizeTitle: (title) => title,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-}));
-
-jest.mock('librechat-data-provider', () => ({
-  CacheKeys: { GEN_TITLE: 'GEN_TITLE' },
 }));
 
 jest.mock('~/cache/getLogStores', () => jest.fn(() => mockCache));
@@ -181,6 +178,39 @@ describe('agents addTitle', () => {
     expect(order).toEqual(['cache', 'title-event', 'save']);
   });
 
+  it('replaces a blocked generated title before caching, emitting, or saving it', async () => {
+    const client = makeClient('BLOCKED-TITLE');
+    const req = makeReq();
+    req.config.filters = {
+      conversationTitles: {
+        pii: {
+          starterPatterns: [],
+          customPatterns: [{ id: 'blocked', label: 'blocked', regex: 'BLOCKED' }],
+        },
+      },
+    };
+    const onTitleGenerated = jest.fn();
+    await addTitle(req, {
+      text: 'hello',
+      client,
+      conversationId: 'cid-filtered',
+      immediate: true,
+      convoReady: Promise.resolve(),
+      onTitleGenerated,
+    });
+
+    expect(mockCache.set).toHaveBeenCalledWith('user-1-cid-filtered', 'New Chat', 120000);
+    expect(onTitleGenerated).toHaveBeenCalledWith({
+      conversationId: 'cid-filtered',
+      title: 'New Chat',
+    });
+    expect(mockSaveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: 'cid-filtered', title: 'New Chat' }),
+      expect.objectContaining({ noUpsert: true }),
+    );
+  });
+
   it('skips generation when the endpoint disables titleConvo', async () => {
     const client = makeClient();
     client.options.titleConvo = false;
@@ -212,7 +242,25 @@ describe('agents addTitle', () => {
     expect(mockSaveConvo).not.toHaveBeenCalled();
   });
 
-  it('propagates an aborted request signal and discards the title without persisting', async () => {
+  it('propagates the abort signal to the title model call', async () => {
+    const client = makeClient();
+    const ac = new AbortController();
+    ac.abort();
+
+    await addTitle(makeReq(), {
+      text: 'hi',
+      client,
+      conversationId: 'cid',
+      immediate: true,
+      convoReady: Promise.resolve(),
+      signal: ac.signal,
+    });
+
+    const { abortController } = client.titleConvo.mock.calls[0][0];
+    expect(abortController.signal.aborted).toBe(true);
+  });
+
+  it('discards the title without persisting when the stream is superseded', async () => {
     const client = makeClient();
     const ac = new AbortController();
     const onTitleGenerated = jest.fn();
@@ -225,17 +273,16 @@ describe('agents addTitle', () => {
       immediate: true,
       convoReady: Promise.resolve(),
       signal: ac.signal,
+      discardSignal: ac.signal,
       onTitleGenerated,
     });
 
-    const { abortController } = client.titleConvo.mock.calls[0][0];
-    expect(abortController.signal.aborted).toBe(true);
     expect(onTitleGenerated).not.toHaveBeenCalled();
     expect(mockSaveConvo).not.toHaveBeenCalled();
     expect(mockCache.delete).toHaveBeenCalledWith('user-1-cid');
   });
 
-  it("does not delete a replacement stream's cached title when aborted", async () => {
+  it("does not delete a replacement stream's cached title when superseded", async () => {
     const client = makeClient('Stale Title');
     const ac = new AbortController();
     ac.abort();
@@ -250,9 +297,47 @@ describe('agents addTitle', () => {
       immediate: true,
       convoReady: Promise.resolve(),
       signal: ac.signal,
+      discardSignal: ac.signal,
     });
 
     expect(mockCache.delete).not.toHaveBeenCalled();
     expect(mockSaveConvo).not.toHaveBeenCalled();
+  });
+
+  it('persists a title generated before a user Stop (signal aborted, not superseded)', async () => {
+    const client = makeClient('Kept Title');
+    // `signal` represents a user Stop; no `discardSignal` since the stream is not
+    // superseded. The title finishes generating and is emitted before the Stop.
+    const ac = new AbortController();
+    const onTitleGenerated = jest.fn();
+    let resolveConvo;
+    const convoReady = new Promise((resolve) => {
+      resolveConvo = resolve;
+    });
+
+    const pending = addTitle(makeReq(), {
+      text: 'hi',
+      client,
+      conversationId: 'cid',
+      immediate: true,
+      convoReady,
+      signal: ac.signal,
+      onTitleGenerated,
+    });
+
+    await flush();
+    expect(onTitleGenerated).toHaveBeenCalledWith({ conversationId: 'cid', title: 'Kept Title' });
+
+    // User stops mid-response, then the conversation row is persisted.
+    ac.abort();
+    resolveConvo();
+    await pending;
+
+    expect(mockSaveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: 'cid', title: 'Kept Title' }),
+      expect.objectContaining({ noUpsert: true }),
+    );
+    expect(mockCache.delete).not.toHaveBeenCalled();
   });
 });

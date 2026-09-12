@@ -2,13 +2,15 @@ const path = require('path');
 const axios = require('axios');
 const yaml = require('js-yaml');
 const keyBy = require('lodash/keyBy');
-const { loadYaml } = require('@librechat/api');
+const { loadYaml, redactConfigSecretMaps, resolveConfigEnvPath } = require('@librechat/api');
 const { Providers } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
 const {
   configSchema,
   paramSettings,
+  EModelEndpoint,
   EImageOutputType,
+  setMaxSubagents,
   agentParamSettings,
   validateSettingDefinitions,
 } = require('librechat-data-provider');
@@ -80,6 +82,7 @@ const envVarMap = new Map();
  */
 function parseEnvVarsToConfig() {
   const envConfig = {};
+  envVarMap.clear();
 
   // Regular expression to match LIBRECHAT_ prefixed environment variables
   const librechatEnvRegex = /^LIBRECHAT_(.+)$/i;
@@ -88,8 +91,8 @@ function parseEnvVarsToConfig() {
     const match = key.match(librechatEnvRegex);
     if (!match) return;
 
-    const pathStr = match[1].toLowerCase();
-    const pathParts = pathStr.split('_');
+    const pathParts = resolveConfigEnvPath(match[1]);
+    if (!pathParts) return;
 
     // Navigate/create the nested path
     let current = envConfig;
@@ -130,7 +133,7 @@ function parseEnvVarsToConfig() {
     }
 
     current[lastKey] = parsedValue;
-    envVarMap.set(key, pathStr);
+    envVarMap.set(key, pathParts.join('.'));
   });
 
   return envConfig;
@@ -230,6 +233,11 @@ async function loadCustomConfig(printConfig = true) {
     }
   }
 
+  // Applied before parsing so specs validated in the same pass (whose subagent
+  // presets share the cap) check against the configured limit. Invalid values
+  // are ignored here and rejected by the schema parse below.
+  setMaxSubagents(customConfig?.endpoints?.[EModelEndpoint.agents]?.maxSubagents);
+
   const result = configSchema.strict().safeParse(customConfig);
   if (result?.error?.errors?.some((err) => err?.path && err.path?.includes('imageOutputType'))) {
     throw new Error(
@@ -277,9 +285,12 @@ https://www.librechat.ai/docs/configuration/stt_tts`);
     process.exit(1);
   } else {
     if (printConfig) {
+      // Masks map-valued secrets (e.g. `langfuse.headers`) so literal gateway
+      // credentials are not copied into application logs on every startup.
+      const loggableConfig = redactConfigSecretMaps(customConfig);
       logger.info('Custom config file loaded:');
-      logger.info(JSON.stringify(customConfig, null, 2));
-      logger.debug('Custom config:', customConfig);
+      logger.info(JSON.stringify(loggableConfig, null, 2));
+      logger.debug('Custom config:', loggableConfig);
     }
   }
 
