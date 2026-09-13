@@ -27,7 +27,7 @@ export const WIDGET_MAX_OUTPUT_TOKENS = 8_192;
  * a bounded signal: `interface.widgetCompileTimeoutMs` moves the budget within
  * the protocol ceiling, and `timeoutMs` moves it for a single caller.
  */
-export const WIDGET_COMPILE_TIMEOUT_MS = WIDGET_COMPILE_TIMEOUT_DEFAULT_MS;
+export const WIDGET_COMPILE_TIMEOUT_MS: number = WIDGET_COMPILE_TIMEOUT_DEFAULT_MS;
 
 export interface ResolveWidgetCompileTimeoutParams {
   /** Explicit budget for one call; wins over the configured one. */
