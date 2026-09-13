@@ -50,6 +50,7 @@ export interface SettingsContextValue {
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
+  hasAdminConfigAccess: boolean;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   adminPanelURL: string;

@@ -1,9 +1,14 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { AgentCapabilities, PermissionTypes, Permissions } from 'librechat-data-provider';
+import {
+  AgentCapabilities,
+  PermissionTypes,
+  Permissions,
+  SystemCapabilities,
+} from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
+import { useHasCapability, useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
-import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
 import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
@@ -13,6 +18,7 @@ export function useSettingsContext(): SettingsContextValue {
   const { data: startupConfig } = useGetStartupConfig();
   const { agentsConfig } = useGetAgentsConfig();
   const { hasAnyPersonalizationFeature, hasMemoryOptOut } = usePersonalizationAccess();
+  const hasCapability = useHasCapability();
 
   const hasRemoteAgents = useHasAccess({
     permissionType: PermissionTypes.REMOTE_AGENTS,
@@ -30,6 +36,7 @@ export function useSettingsContext(): SettingsContextValue {
   const balanceEnabled = startupConfig?.balance?.enabled === true;
   const langfuseConnectionAccess = startupConfig?.langfuseConnectionAccess === true;
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
+  const hasAdminConfigAccess = hasCapability(SystemCapabilities.ACCESS_ADMIN);
   const isLocalProvider = user?.provider === 'local';
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
@@ -56,6 +63,7 @@ export function useSettingsContext(): SettingsContextValue {
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
+      hasAdminConfigAccess,
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
@@ -73,6 +81,7 @@ export function useSettingsContext(): SettingsContextValue {
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
+      hasAdminConfigAccess,
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,

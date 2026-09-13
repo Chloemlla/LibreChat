@@ -36,6 +36,7 @@ import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
+import AdminConfig from '../SettingsTabs/General/AdminConfig';
 import { smoothStreamingAtom } from '~/store/smoothStreaming';
 import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
 import { ClearChats } from '../SettingsTabs/Data/ClearChats';
@@ -190,6 +191,15 @@ export const registry: SettingEntry[] = [
     keywords: ['admin', 'panel', 'dashboard'],
     Component: AdminPanel,
     show: (ctx) => ctx.adminPanelURL !== '',
+  },
+  {
+    id: 'adminConfig',
+    tab: GENERAL,
+    section: 'admin',
+    labelKey: 'com_ui_admin_config_title',
+    keywords: ['config', 'configs', 'override', 'overrides', 'admin', 'principal', 'tenant'],
+    Component: AdminConfig,
+    show: (ctx) => ctx.hasAdminConfigAccess,
   },
 
   // Chat · Sending
