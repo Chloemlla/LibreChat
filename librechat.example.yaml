@@ -265,8 +265,8 @@ interface:
   # geogebraOrigin: 'https://ggb.example.com'
   # Budget for one widget compile call, in milliseconds (default: 120000).
   # A compile that outlives it is aborted and the card renders an error, so raise it when a model
-  # legitimately needs longer to write a component. The ceiling is 300000 (5 minutes)
-  # and a larger value is clamped to it.
+  # legitimately needs longer to write a component. It is a whole number of milliseconds between
+  # 1 and 300000 (5 minutes); a value outside that range fails config validation and stops startup.
   # widgetCompileTimeoutMs: 120000
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true
