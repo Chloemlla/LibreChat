@@ -7,12 +7,23 @@ import AdminConfig from '../AdminConfig';
 const mockUseAdminConfigsQuery = jest.fn();
 const mockUseAdminConfigQuery = jest.fn();
 const mockUseToggleAdminConfigMutation = jest.fn();
+const mockIdleMutation = () => ({ isLoading: false, mutate: jest.fn() });
 
+/**
+ * The components read these through the `~/data-provider` barrel, so every hook the
+ * rendered tree imports has to be present here — a name left out arrives as
+ * `undefined` and the render throws rather than failing an assertion.
+ */
 jest.mock('~/data-provider/AdminConfig/queries', () => ({
   useAdminConfigsQuery: () => mockUseAdminConfigsQuery(),
   useAdminConfigQuery: (principalType: string, principalId: string) =>
     mockUseAdminConfigQuery(principalType, principalId),
   useToggleAdminConfigMutation: () => mockUseToggleAdminConfigMutation(),
+  useUpsertAdminConfigMutation: () => mockIdleMutation(),
+  usePatchAdminConfigFieldsMutation: () => mockIdleMutation(),
+  useTombstoneAdminConfigFieldMutation: () => mockIdleMutation(),
+  useDeleteAdminConfigFieldMutation: () => mockIdleMutation(),
+  useDeleteAdminConfigMutation: () => mockIdleMutation(),
 }));
 
 jest.mock('~/hooks', () => ({

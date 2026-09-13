@@ -97,6 +97,7 @@ jobs:
               src/components/Auth/__tests__/Registration.turnstile.test.tsx
               src/components/Audio/__tests__/VoicePreview.spec.tsx
               src/components/Chat/__tests__/Footer.spec.tsx
+              src/components/Nav/Settings/__tests__
               src/components/Nav/SettingsTabs/General/__tests__
               src/components/Widgets/__tests__
     steps:
