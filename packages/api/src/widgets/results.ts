@@ -22,7 +22,7 @@ export const WIDGET_RESULTS_MAX_ENTRIES = 8;
  * and reporting it as failed lets the user retry instead of watching a card
  * that will never settle.
  */
-export const WIDGET_PENDING_STALE_MS = WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS + 60_000;
+export const WIDGET_PENDING_STALE_MS: number = WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS + 60_000;
 
 /** What a `pending` entry orphaned by a restart reads as. */
 const WIDGET_ORPHANED_COMPILE_ERROR =
