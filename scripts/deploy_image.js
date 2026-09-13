@@ -1101,7 +1101,7 @@ async function uploadLogFile(logPath, adminPassword) {
       return null;
     }
 
-    const url = "https://api.951100.xyz/api/sharelog";
+    const url = "https://tts.chloemlla.com/api/sharelog";
     const FormData = getFormData();
     const axios = getAxios();
     const formData = new FormData();
@@ -1124,7 +1124,7 @@ async function uploadLogFile(logPath, adminPassword) {
       let link = data.link;
       if (!link && data.id) {
         // 兼容只返回id的情况
-        link = `https://api.951100.xyz/logshare?id=${data.id}`;
+        link = `https://tts.chloemlla.com/logshare?id=${data.id}`;
       }
       if (link) {
         logInfo(`日志已上传: ${link} (可直接预览/下载)`);
@@ -1150,7 +1150,7 @@ async function uploadLogFile(logPath, adminPassword) {
 async function queryLogFile(logId, adminPassword) {
   try {
     const axios = getAxios();
-    const url = `https://api.951100.xyz/api/sharelog/${logId}`;
+    const url = `https://tts.chloemlla.com/api/sharelog/${logId}`;
     const data = { adminPassword };
 
     const response = await axios.post(url, data, {
