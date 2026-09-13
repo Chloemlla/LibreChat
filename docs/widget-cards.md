@@ -165,6 +165,35 @@ Because the endpoint is the *user's* choice rather than the agent's, the provide
 from the agent that produced the spec — which is the point: a cheap model writes the spec, and the
 user decides which model compiles it.
 
+### The compiled result is stored on the message
+
+A card is a markdown component, so its local state goes with the unmount, and every re-render of
+the message mounts it again — a page refresh would otherwise throw away the card that was just
+compiled. So on a successful compile the client writes the result back onto **the message carrying
+the tag** (`POST /api/messages/widgets/:messageId`) and reads it back by `messageId` (the `GET` on
+the same path).
+
+- **Four fields per entry.** Each record is `{ spec, endpoint, model, code }`: the spec decides
+  which card it belongs to, the endpoint and model are what restoring the user's choice needs, and
+  the code is the compile output itself. Entries are appended oldest-first; recompiling the same
+  `(spec, endpoint, model)` **replaces** that entry and moves it to the end, so the tail is always
+  the user's most recent choice. Past eight entries the oldest falls off the head.
+- **The card and its message share only the id.** The card takes `messageId` from
+  `MessageContext` and fetches its own results, rather than threading the whole message object
+  through `MessageRenderer`, `ContentParts` and the share path.
+- **Restore happens once, and never over the user.** When the message already carries a record,
+  the card adopts the endpoint and model of the tail entry and mounts its code directly; once the
+  user has touched a selector it stops restoring, and a refetch does not make it try again.
+- **A failed write leaves the card alone.** It only means the card has to be compiled once more
+  after a refresh: the card mounts as usual, with no error and no retry.
+- Ownership and mutation follow the artifact route: `getMessage({ user, messageId })` establishes
+  the message is the caller's, a read-only thread is refused by the same subagent guard, and the
+  write goes through `saveMessage`. The field is **exported with the message** too —
+  `CLIENT_MESSAGE_SELECT` is an exclusion projection, so a field added there is in user exports by
+  default.
+- GeoGebra figure cards need none of this: their commands are already in the message text and are
+  parsed back out of the tag on re-render.
+
 ## Sandbox
 
 The card is an `<iframe sandbox="allow-scripts" src="/widget-runtime.html">`:
@@ -325,7 +354,9 @@ self-hosted:
 Everything in the tag body is model output, so it is treated as untrusted input at every hop:
 the server never parses or executes it, and inside the frame each line goes to GeoGebra's
 `evalCommand` — the command interpreter — and never to `eval`, `Function` or a script tag. The
-frame's meta CSP leaves `connect-src 'none'`, so a construction cannot post the conversation
+frame's meta CSP is built on `default-src 'none'`, and its connection directive allows only
+`'self'` — that one is for the loader fetching `<hash>.cache.js` from its own origin, so no
+address pointing anywhere else is on the list and a construction cannot post the conversation
 anywhere even if a command could be made to try.
 
 ## Files
@@ -337,6 +368,8 @@ New:
 | `packages/api/src/prompts/widgets/index.ts` | protocol directive + codegen system prompt |
 | `packages/api/src/widgets/generate.ts` | single non-streaming model call |
 | `packages/api/src/widgets/validate.ts` | bounds and sanity checks on the returned code |
+| `packages/api/src/widgets/results.ts` | parsing, deduplicating append and the entry cap for compiled results |
+| `packages/api/src/widgets/results.spec.ts` | specs for that parsing and append, and for both handlers |
 | `packages/api/src/widgets/controller.ts` | request handler |
 | `packages/api/src/endpoints/access.ts` | the model-access rule both guards apply |
 | `api/server/routes/widgets.js` | route wiring (auth, limiter) |
@@ -358,20 +391,27 @@ Edited:
 | `packages/api/src/prompts/widgets/index.ts` | the GeoGebra directive builder |
 | `packages/data-provider/src/config.ts` | `interface.widgets` schema field + default; `interface.geogebraOrigin`, optional and without a default |
 | `packages/data-schemas/src/app/interface.ts` | copy `widgets` and `geogebraOrigin` into the loaded interface config |
-| `packages/data-provider/src/api-endpoints.ts`, `data-service.ts`, `keys.ts` | endpoint, caller, mutation key |
-| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse` |
-| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation` |
+| `packages/data-schemas/src/schema/message.ts`, `src/types/message.ts` | the `widgets` subdocument on the message and `IMessage.widgets` |
+| `api/server/routes/messages.js` | `GET`/`POST` `/api/messages/widgets/:messageId`, registered before the parameterized `GET` |
+| `packages/data-provider/src/api-endpoints.ts`, `data-service.ts`, `keys.ts` | both endpoint groups, their callers, and the query/mutation keys |
+| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse`; `TStoredWidget` / `TWidgetResultsResponse` |
+| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`; `useGetWidgetResultsQuery` and `useSaveWidgetResultMutation` |
 | `api/server/routes/index.js`, `api/server/index.js` | register and mount the route |
 | `api/server/middleware/validateModel.js` | build both guards on the shared rule, and expose the JSON shape |
 | `client/src/components/Chat/Messages/Content/markdownConfig.ts` | register both plugins and both components |
 | `client/src/components/Widgets/index.ts` | export the figure card alongside the widget card |
+| `client/src/components/Widgets/GenerateWidget.tsx` | read this message's compiled results, store a fresh compile, restore the endpoint and model from the tail entry |
 | `client/vite.config.ts` | copy `widget-runtime.html`, `ggb-runtime.html` and `geogebra/` into `dist/` |
 | `client/src/locales/en/translation.json` | card strings |
 | `librechat.example.yaml` | document the key |
 
 ## Non-goals
 
-- No persistence. Cards live in the message that produced them; nothing is stored server-side.
+- **No persisted interaction.** A compiled card's result is stored with its message (see
+  [The compiled result is stored on the message](#the-compiled-result-is-stored-on-the-message)),
+  but the clicks, slider positions and inputs inside the frame are not: after a refresh a card
+  returns to the state it was compiled in. A figure card has nothing to store — its commands are
+  the message text.
 - No interaction sent back into the conversation. Clicks and inputs stay inside the frame.
 - No card support in `MarkdownLite` (share, subagent, steer, terms views). Those render a fixed,
   narrower subset; a tag there stays literal text.
@@ -380,7 +420,13 @@ Edited:
 
 - Backend: unit specs for the directive builders (widget on/off; GeoGebra with and without an
   origin), the code validator, the shared model-access
-  rule, and the handler's authorization and error paths.
+  rule, and the handler's authorization and error paths; for the stored-result parsing,
+  deduplicating append and entry cap; and for the two result handlers' authorization and error
+  paths.
 - Frontend: a render test for a message carrying a complete tag, a tag still streaming, and a tag with
-  a malformed body; a unit test for the message-protocol reducer.
-- CI is the only build and test authority in this repository; nothing is built locally.
+  a malformed body; a unit test for the message-protocol reducer; and the card mounting a result its
+  message already carries, restoring the choice, storing a fresh compile, and surviving a failed
+  write.
+- CI is the only build and test authority in this repository; nothing is built locally. CI covers
+  compilation, types and unit tests, **not what the browser actually renders** — end-to-end
+  behavior such as "the card is still there after a refresh" needs one manual check after a deploy.

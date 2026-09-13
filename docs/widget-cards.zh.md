@@ -106,6 +106,17 @@ const code = extractText(response?.content);
 
 因为 endpoint 是**用户**的选择而非 agent 的，这里的 provider 可以和产出规格的那个 agent 不同 —— 这正是要点：便宜模型写规格，用户决定用哪个模型编译。
 
+### 编译结果随消息落库
+
+卡片是 markdown 组件，本地状态随卸载一并消失，而消息每次重渲染都会重新挂载它 —— 刷新页面就等于丢掉刚编译好的卡片。所以编译成功后客户端把结果存回**产出这条标签的那条消息**（`POST /api/messages/widgets/:messageId`），卡片再按 `messageId` 读回来（同路径的 `GET`）。
+
+- **存的是四元组。** 每条记录为 `{ spec, endpoint, model, code }`：spec 决定它属于哪张卡片，endpoint/model 是还原用户选择所必需的，code 是编译产物本身。追加时最旧在前；同一条 `(spec, endpoint, model)` 重编译会**替换**并移到末尾，所以末尾那条永远是用户最近一次的选择。超过 8 条从头部淘汰。
+- **卡片与消息只共享 id。** 卡片从 `MessageContext` 取 `messageId` 自己去读，而不是把整个消息对象穿过 `MessageRenderer`、`ContentParts` 与分享路径层层传下来。
+- **还原只做一次，且不与用户抢。** 挂载时若消息上已有记录，卡片采纳末尾那条的 endpoint/model 并直接挂载它的 code；用户已经动过选择器就不再还原，重新取数也不会让它重来一遍。
+- **落库失败不改变卡片。** 写失败只意味着刷新后要重新编译一次：卡片照常挂载，不报错，也不显示重试。
+- 授权与改动路径沿用 artifact 路由：`getMessage({ user, messageId })` 确认归属，只读线程由同一个 subagent 守卫拒绝，写入走 `saveMessage`。字段也随消息导出 —— `CLIENT_MESSAGE_SELECT` 是排除式投影，因此加进去的字段默认就在用户的导出里。
+- GeoGebra 图卡不需要这一层：它的命令本来就在消息正文里，重渲染时从标签重新解析即可。
+
 ## 沙盒
 
 卡片是一个 `<iframe sandbox="allow-scripts" src="/widget-runtime.html">`：
@@ -192,7 +203,30 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 
 ### 命令是不可信输入
 
-标签块里的内容全是模型输出，因此在每一跳都按不可信输入对待：服务端既不解析也不执行它；frame 内每一行都交给 GeoGebra 的命令解释器 `evalCommand`，绝不交给 `eval`、`Function` 或 script 标签。frame 的 meta CSP 里是 `connect-src 'none'`，所以哪怕某条命令能被诱导去外发，构造也发不出任何东西。
+标签块里的内容全是模型输出，因此在每一跳都按不可信输入对待：服务端既不解析也不执行它；frame 内每一行都交给 GeoGebra 的命令解释器 `evalCommand`，绝不交给 `eval`、`Function` 或 script 标签。frame 的 meta CSP 以 `default-src 'none'` 打底，发起连接这一项只放行 `'self'` —— 那一条是给 loader 取本 origin 上的 `<hash>.cache.js` 用的，指向别处的地址一个都不在允许列表里，所以哪怕某条命令能被诱导去外发，构造也发不出任何东西。
+
+### geograba：工作台，与运行时的来源
+
+[geograba](https://github.com/Chloemlla/GeoGebra-Script-Lab) 是这条链路的上游前端：一个 Vite + React 的 GeoGebra 脚本工作台，带 Monaco 编辑器、控制面板与日志面板。人用它写一条构造、看它画出来、把错误一条条改掉；本仓负责把同一条构造渲染进对话。图卡 runtime 与它走的是同一套流程：
+
+| geograba | 这一层做什么 | 图卡 runtime 里的对应物 |
+|---|---|---|
+| `src/engine/Preprocessor.js` | 去注释、滤空行、括号与赋值语法校验、变量依赖提取、风险函数与嵌套深度告警 | `stripComment` 与逐条取舍 |
+| `src/engine/Dispatcher.js` | 顺序执行、逐条收集错误、进度回调、30 秒执行预算 | `runCommands` 的循环与 `EXECUTION_TIMEOUT` |
+| `src/engine/GeoGebraEngine.js` | 异步起 applet、隐藏原生工具栏、强制英文 API、对象状态回写 | `appletOnLoad` 拿到实例后发 `ggb:ready` |
+
+两者真正分开的地方是**信任模型**，有两处值得记住：
+
+- **命中危险模式之后怎么办。** 工作台的输入是人敲的，所以 `Preprocessor.clean` 命中一条 `DANGEROUS_PATTERNS` 就抛错、整批不执行 —— 作者改掉重来即可。图卡面对的是模型输出，一票否决会让一条坏命令吞掉整张已经画对一半的图，所以 runtime 改成**跳过该条、并入警告**，其余命令照跑。
+- **事件处理器那条正则。** 工作台用 `on\w+\s*=`；图卡收紧成一张事件名白名单。因为 `on\w+` 会把合法的 GeoGebra 标签（例如 `one=`）判成 XSS 风险，而那条命令本身毫无问题。
+
+**要把 geograba 直接当成 frame 的 runtime 用**，得先在它那边补三件事，缺一件都不成立：
+
+1. **一个只接收命令的入口。** 仓库里目前没有任何 `postMessage` 或 iframe 桥接 —— 它是一整个编辑器应用，没有「只画一张图，不要编辑器、认证和后端」的页面。图卡需要的正是这样一份文档（形态同 `ggb-runtime.html`），并且要放在能被当作 `ggb-runtime.html` 取到的路径上。
+2. **CSP 对齐。** geograba 现在从 `https://www.geogebra.org/apps/deployggb.js` 取 applet，`index.html` 的策略也放行 `geogebra.org`；图卡 frame 则是 `default-src 'none'` 且脚本只来自自己的 origin。要么把这棵 bundle 自托管到那个子域（同 `fetch.mjs` 的做法），要么改写策略 —— 而后者等于让出 `default-src 'none'` 这条底线。
+3. **丢掉应用外壳。** 工作台带认证、后端代理与管理台；这些在卡片 frame 里既用不上，也不该出现在那个 origin 上。
+
+所以现在的分工是：**geograba 是上游与联调工具，`ggb-runtime.html` 是同一套流程在不可信输入下的最小实现** —— 语义一致，加固策略不同。真要挂 geograba 的构建产物，先把上面三步做完，再改 `interface.geogebraOrigin`。
 
 ## 文件清单
 
@@ -203,6 +237,8 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 | `packages/api/src/prompts/widgets/index.ts` | 协议指令 + 代码生成系统提示词 |
 | `packages/api/src/widgets/generate.ts` | 单次非流式模型调用 |
 | `packages/api/src/widgets/validate.ts` | 对返回代码的边界与合理性校验 |
+| `packages/api/src/widgets/results.ts` | 编译结果的解析、去重追加与上限 |
+| `packages/api/src/widgets/results.spec.ts` | 上述解析、追加与两个 handler 的测试 |
 | `packages/api/src/widgets/controller.ts` | 请求 handler |
 | `packages/api/src/endpoints/access.ts` | 两个守卫共用的模型访问规则 |
 | `api/server/routes/widgets.js` | 路由接线（鉴权、限流） |
@@ -223,26 +259,29 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 | `packages/api/src/agents/initialize.ts` | 在 artifacts 块之后追加指令 |
 | `packages/api/src/prompts/widgets/index.ts` | GeoGebra 指令构造器 |
 | `packages/data-provider/src/config.ts` | `interface.widgets` schema 字段 + 默认值；`interface.geogebraOrigin`，可选且无默认值 |
+| `packages/data-schemas/src/schema/message.ts`、`src/types/message.ts` | 消息上的 `widgets` 子文档与 `IMessage.widgets` |
+| `api/server/routes/messages.js` | `GET`/`POST` `/api/messages/widgets/:messageId`，注册在参数化 GET 之前 |
 | `packages/data-schemas/src/app/interface.ts` | 把 `widgets` 与 `geogebraOrigin` 拷进加载后的 interface 配置 |
-| `packages/data-provider/src/api-endpoints.ts`、`data-service.ts`、`keys.ts` | endpoint、调用方、mutation key |
-| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse` |
-| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation` |
+| `packages/data-provider/src/api-endpoints.ts`、`data-service.ts`、`keys.ts` | 编译与结果两组 endpoint、调用方、query/mutation key |
+| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse`；`TStoredWidget` / `TWidgetResultsResponse` |
+| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`；`useGetWidgetResultsQuery` 与 `useSaveWidgetResultMutation` |
 | `api/server/routes/index.js`、`api/server/index.js` | 注册并挂载路由 |
 | `api/server/middleware/validateModel.js` | 两个守卫改为建立在共用规则之上，并导出 JSON 形态 |
 | `client/src/components/Chat/Messages/Content/markdownConfig.ts` | 注册两套插件与两个组件 |
 | `client/src/components/Widgets/index.ts` | 把图卡组件与 widget 组件一起导出 |
+| `client/src/components/Widgets/GenerateWidget.tsx` | 读回本消息的编译结果、编译成功后回存、按末尾记录还原 endpoint 与 model |
 | `client/vite.config.ts` | 把 `widget-runtime.html`、`ggb-runtime.html` 与 `geogebra/` 复制进 `dist/` |
 | `client/src/locales/en/translation.json` | 卡片文案 |
 | `librechat.example.yaml` | 记录该键 |
 
 ## 非目标
 
-- 不做持久化。卡片只活在产出它的那条消息里；服务端不存任何东西。
+- **不持久化交互。** 编译出的卡片结果会随消息落库（见[编译结果随消息落库](#编译结果随消息落库)），但点击、滑块、输入这些 frame 内部的交互状态不落库：刷新之后卡片回到它被编译时的状态。图卡没有可落库之物 —— 命令本来就在消息正文里。
 - 不把交互回传进对话。点击与输入都留在 frame 内部。
 - `MarkdownLite`（分享、subagent、steer、条款页）不支持卡片。那些视图渲染的是一组固定的、更窄的子集；标签在那边保持为普通文本。
 
 ## 验证
 
-- 后端：指令构造器的单元测试（widget 开/关；GeoGebra 配置了 origin 与没配两种情况）、代码校验器、共用的模型访问规则、handler 的授权与错误路径。
-- 前端：一条携带完整标签的消息、一个仍在流式输出中的标签、一个 JSON 体损坏的标签，各自的渲染测试；外加消息协议 reducer 的单元测试。
-- 本仓以 CI 为唯一的构建与测试权威；本地不做任何构建。
+- 后端：指令构造器的单元测试（widget 开/关；GeoGebra 配置了 origin 与没配两种情况）、代码校验器、共用的模型访问规则、handler 的授权与错误路径、结果记录的解析/去重追加/上限以及两个结果 handler 的授权与错误路径。
+- 前端：一条携带完整标签的消息、一个仍在流式输出中的标签、一个 JSON 体损坏的标签，各自的渲染测试；消息协议 reducer 的单元测试；以及卡片在消息已带结果时直接挂载、还原选择、编译后回存，和写失败不打断卡片这几条。
+- 本仓以 CI 为唯一的构建与测试权威；本地不做任何构建。CI 覆盖编译、类型与单测，**覆盖不到浏览器里的实际渲染** —— 「刷新后卡片仍在」这类端到端行为需要在部署后人工确认一次。
