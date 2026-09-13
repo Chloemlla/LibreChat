@@ -149,7 +149,6 @@ export const oauthAuthorizationCodeSchema: Schema<IOAuthAuthorizationCode> =
     expiresAt: {
       type: Date,
       required: true,
-      index: true,
     },
     createdAt: {
       type: Date,
@@ -206,7 +205,6 @@ export const oauthTokenSchema: Schema<IOAuthToken> = new Schema<IOAuthToken>({
   expiresAt: {
     type: Date,
     required: true,
-    index: true,
   },
   createdAt: {
     type: Date,
