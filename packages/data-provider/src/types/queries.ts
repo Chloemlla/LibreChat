@@ -1,5 +1,25 @@
 import type { InfiniteData } from '@tanstack/react-query';
-import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config';
+import type {
+  RerankerTypes,
+  SearchProviders,
+  ScraperProviders,
+  TEndpoint,
+  FileStorage,
+  TAzureConfig,
+  TCustomConfig,
+  TMemoryConfig,
+  TVertexAIConfig,
+  TAgentsEndpoint,
+  CloudFrontConfig,
+  TCustomEndpoints,
+  TAssistantEndpoint,
+  TAnthropicEndpoint,
+  SummarizationConfig,
+  SkillSyncConfig,
+} from '../config';
+import type { TFileConfig } from '../file-config';
+import type { FunctionTool } from './assistants';
+import type { FiltersConfig } from '../filters';
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
@@ -308,4 +328,144 @@ export type GraphTokenResponse = {
   token_type: string;
   expires_in: number;
   scope: string;
+};
+
+/* Admin config (base config + per-principal overrides) */
+
+/** Principal types `GET|PUT|PATCH|DELETE /api/admin/config/:principalType/...` accepts. */
+export type TConfigPrincipalType =
+  | p.PrincipalType.USER
+  | p.PrincipalType.GROUP
+  | p.PrincipalType.ROLE;
+
+export type TAdminConfigPrincipal = {
+  principalType: TConfigPrincipalType;
+  principalId: string;
+};
+
+/**
+ * A stored override document as the admin API serializes it over JSON: mirrors
+ * `IConfig` from `@librechat/data-schemas` — which the client does not depend
+ * on — with `_id` and the timestamps already stringified.
+ */
+export type TAdminConfig = TAdminConfigPrincipal & {
+  _id: string;
+  principalModel: p.PrincipalModel;
+  priority: number;
+  overrides: Partial<TCustomConfig>;
+  tombstones?: string[];
+  isActive: boolean;
+  configVersion: number;
+  tenantId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type TAdminConfigListResponse = {
+  configs: TAdminConfig[];
+};
+
+/**
+ * Mirrors `AppConfig` from `@librechat/data-schemas` (not a client dependency),
+ * which is the resolved YAML + base-document config `GET /base` returns.
+ */
+export type TAdminAppConfig = {
+  config: Partial<TCustomConfig>;
+  ocr?: TCustomConfig['ocr'];
+  paths?: {
+    uploads: string;
+    imageOutput: string;
+    publicPath: string;
+    [key: string]: string;
+  };
+  memory?: TMemoryConfig;
+  summarization?: SummarizationConfig;
+  webSearch?: TCustomConfig['webSearch'];
+  filters?: FiltersConfig;
+  messageFilter?: TCustomConfig['messageFilter'];
+  langfuse?: TCustomConfig['langfuse'];
+  skillSync?: SkillSyncConfig;
+  fileStrategy: FileStorage;
+  fileStrategies?: TCustomConfig['fileStrategies'];
+  cloudfront?: CloudFrontConfig;
+  registration?: TCustomConfig['registration'];
+  actions?: TCustomConfig['actions'];
+  filteredTools?: string[];
+  includedTools?: string[];
+  imageOutputType: string;
+  interfaceConfig?: TCustomConfig['interface'];
+  turnstileConfig?: Partial<TCustomConfig['turnstile']>;
+  balance?: Partial<TCustomConfig['balance']>;
+  transactions?: TCustomConfig['transactions'];
+  speech?: TCustomConfig['speech'];
+  mcpConfig?: TCustomConfig['mcpServers'] | null;
+  mcpSettings?: TCustomConfig['mcpSettings'] | null;
+  fileConfig?: TFileConfig;
+  secureImageLinks?: TCustomConfig['secureImageLinks'];
+  modelSpecs?: TCustomConfig['modelSpecs'];
+  availableTools?: Record<string, FunctionTool>;
+  endpoints?: {
+    allowedAddresses?: string[];
+    openAI?: Partial<TEndpoint>;
+    google?: Partial<TEndpoint>;
+    bedrock?: Partial<TEndpoint>;
+    anthropic?: Partial<TAnthropicEndpoint> & { vertexConfig?: TVertexAIConfig };
+    azureOpenAI?: TAzureConfig;
+    assistants?: Partial<TAssistantEndpoint>;
+    azureAssistants?: Partial<TAssistantEndpoint>;
+    agents?: Partial<TAgentsEndpoint>;
+    custom?: TCustomEndpoints;
+    all?: Partial<TEndpoint>;
+  };
+};
+
+export type TAdminBaseConfigResponse = {
+  config: TAdminAppConfig;
+};
+
+export type TAdminConfigResponse = {
+  config: TAdminConfig;
+};
+
+export type TAdminConfigDeleteResponse = {
+  success: true;
+};
+
+/**
+ * A write answers with the stored document, or — when every submitted field was
+ * stripped as non-actionable (base-only section, interface permission field) —
+ * with a message and no document.
+ */
+export type TAdminConfigWriteResponse = { config: TAdminConfig | null } | { message: string };
+
+export type TAdminConfigFieldEntry = {
+  fieldPath: string;
+  /**
+   * Any JSON value: `configSchema` validates the assembled payload, so the
+   * dot-path — not this type — decides the shape.
+   */
+  value: unknown;
+};
+
+export type TAdminConfigOverridesRequest = TAdminConfigPrincipal & {
+  overrides: Partial<TCustomConfig>;
+  priority?: number;
+};
+
+export type TAdminConfigFieldsRequest = TAdminConfigPrincipal & {
+  entries: TAdminConfigFieldEntry[];
+  priority?: number;
+};
+
+export type TAdminConfigTombstoneRequest = TAdminConfigPrincipal & {
+  fieldPath: string;
+  priority?: number;
+};
+
+export type TAdminConfigFieldRequest = TAdminConfigPrincipal & {
+  fieldPath: string;
+};
+
+export type TAdminConfigActiveRequest = TAdminConfigPrincipal & {
+  isActive: boolean;
 };

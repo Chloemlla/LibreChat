@@ -81,7 +81,8 @@ describe('Experimental server configuration', () => {
     expect(listenIndex).toBeGreaterThan(routingIndex);
   });
 
-  it('projects base-only event rollout barriers before accepting requests', () => {
+  it('reads the merged config for startup consumers and base-only barriers for module loading', () => {
+    const appConfigIndex = source.indexOf('const appConfig = await getAppConfig();');
     const baseConfigIndex = source.indexOf(
       'const baseAppConfig = await getAppConfig({ baseOnly: true });',
     );
@@ -90,9 +91,14 @@ describe('Experimental server configuration', () => {
     );
     const listenIndex = source.indexOf('const server = app.listen');
 
-    expect(baseConfigIndex).toBeGreaterThan(-1);
+    expect(appConfigIndex).toBeGreaterThan(-1);
+    expect(baseConfigIndex).toBeGreaterThan(appConfigIndex);
+    // Rollout barriers are process-wide, so they read the base config, not `__base__` overrides.
     expect(eventRuntimeIndex).toBeGreaterThan(baseConfigIndex);
     expect(listenIndex).toBeGreaterThan(eventRuntimeIndex);
+    // The startup consumers must never regress to the base-only read, which skips the DB
+    // override merge and silently ignores admin-panel edits.
+    expect(source).not.toContain('const appConfig = await getAppConfig({ baseOnly: true });');
   });
 
   it('matches the standard server pre-authentication tenant routes', () => {

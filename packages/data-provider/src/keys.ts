@@ -103,12 +103,18 @@ export enum QueryKeys {
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */
   pinnedOrder = 'pinnedOrder',
+  /* Admin config */
+  adminConfigs = 'adminConfigs',
+  adminBaseConfig = 'adminBaseConfig',
+  adminConfig = 'adminConfig',
 }
 
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
+  adminConfigPrincipal: (principalType: string, principalId: string) =>
+    [QueryKeys.adminConfig, principalType, principalId] as const,
 } as const;
 
 export enum MutationKeys {
@@ -173,4 +179,10 @@ export enum MutationKeys {
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
+  upsertAdminConfig = 'upsertAdminConfig',
+  patchAdminConfigFields = 'patchAdminConfigFields',
+  tombstoneAdminConfigField = 'tombstoneAdminConfigField',
+  deleteAdminConfigField = 'deleteAdminConfigField',
+  deleteAdminConfig = 'deleteAdminConfig',
+  toggleAdminConfig = 'toggleAdminConfig',
 }

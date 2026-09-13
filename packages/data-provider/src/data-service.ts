@@ -59,6 +59,91 @@ export function getLangfuseSessionLink(
   return request.get(endpoints.adminLangfuseSessionLink(conversationId));
 }
 
+/* Admin config (base config + per-principal overrides) */
+
+function configUrl(variables: q.TAdminConfigPrincipal): string {
+  return endpoints.adminConfigPrincipal(variables.principalType, variables.principalId);
+}
+
+function fieldsUrl(variables: q.TAdminConfigPrincipal): string {
+  return endpoints.adminConfigFields(variables.principalType, variables.principalId);
+}
+
+function tombstoneUrl(variables: q.TAdminConfigPrincipal): string {
+  return endpoints.adminConfigTombstone(variables.principalType, variables.principalId);
+}
+
+function activeUrl(variables: q.TAdminConfigPrincipal): string {
+  return endpoints.adminConfigActive(variables.principalType, variables.principalId);
+}
+
+function fieldUrl(variables: q.TAdminConfigFieldRequest): string {
+  return endpoints.adminConfigField(
+    variables.principalType,
+    variables.principalId,
+    variables.fieldPath,
+  );
+}
+
+export function getAdminConfigs(): Promise<q.TAdminConfigListResponse> {
+  return request.get(endpoints.adminConfig());
+}
+
+export function getAdminBaseConfig(baseOnly = false): Promise<q.TAdminBaseConfigResponse> {
+  return request.get(endpoints.adminConfigBase(baseOnly));
+}
+
+export function getAdminConfig(
+  variables: q.TAdminConfigPrincipal,
+): Promise<q.TAdminConfigResponse> {
+  return request.get(configUrl(variables));
+}
+
+export function upsertAdminConfig(
+  variables: q.TAdminConfigOverridesRequest,
+): Promise<q.TAdminConfigWriteResponse> {
+  return request.put(configUrl(variables), {
+    overrides: variables.overrides,
+    priority: variables.priority,
+  });
+}
+
+export function patchAdminConfigFields(
+  variables: q.TAdminConfigFieldsRequest,
+): Promise<q.TAdminConfigWriteResponse> {
+  return request.patch(fieldsUrl(variables), {
+    entries: variables.entries,
+    priority: variables.priority,
+  });
+}
+
+export function tombstoneAdminConfigField(
+  variables: q.TAdminConfigTombstoneRequest,
+): Promise<q.TAdminConfigWriteResponse> {
+  return request.post(tombstoneUrl(variables), {
+    fieldPath: variables.fieldPath,
+    priority: variables.priority,
+  });
+}
+
+export function deleteAdminConfigField(
+  variables: q.TAdminConfigFieldRequest,
+): Promise<q.TAdminConfigResponse> {
+  return request.delete(fieldUrl(variables));
+}
+
+export function deleteAdminConfig(
+  variables: q.TAdminConfigPrincipal,
+): Promise<q.TAdminConfigDeleteResponse> {
+  return request.delete(configUrl(variables));
+}
+
+export function toggleAdminConfig(
+  variables: q.TAdminConfigActiveRequest,
+): Promise<q.TAdminConfigResponse> {
+  return request.patch(activeUrl(variables), { isActive: variables.isActive });
+}
+
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
 }

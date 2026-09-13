@@ -513,6 +513,21 @@ export const adminLangfuseConnectionTest = () => `${adminLangfuseConnection()}/t
 export const adminLangfuseSessionLink = (conversationId: string) =>
   `${adminLangfuseConnection()}/session/${encodeURIComponent(conversationId)}`;
 
+/* Admin config (base config + per-principal overrides) */
+export const adminConfig = () => `${BASE_URL}/api/admin/config`;
+export const adminConfigBase = (baseOnly = false) =>
+  `${adminConfig()}/base${baseOnly ? '?baseOnly=true' : ''}`;
+export const adminConfigPrincipal = (principalType: string, principalId: string) =>
+  `${adminConfig()}/${encodeURIComponent(principalType)}/${encodeURIComponent(principalId)}`;
+export const adminConfigFields = (principalType: string, principalId: string) =>
+  `${adminConfigPrincipal(principalType, principalId)}/fields`;
+export const adminConfigTombstone = (principalType: string, principalId: string) =>
+  `${adminConfigFields(principalType, principalId)}/tombstone`;
+export const adminConfigField = (principalType: string, principalId: string, fieldPath: string) =>
+  `${adminConfigFields(principalType, principalId)}?fieldPath=${encodeURIComponent(fieldPath)}`;
+export const adminConfigActive = (principalType: string, principalId: string) =>
+  `${adminConfigPrincipal(principalType, principalId)}/active`;
+
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;
 

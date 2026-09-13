@@ -229,8 +229,14 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
-  const appConfig = await getAppConfig({ baseOnly: true });
-  configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+  /* Startup consumers read the merged config (YAML base + admin-panel `__base__` overrides),
+   * so a config saved to the database takes effect on the next boot rather than being
+   * silently ignored. */
+  const appConfig = await getAppConfig();
+  /* Process-wide module loading reads the base config only: a `__base__` override must not
+   * decide which modules every worker imports. Mirrors experimental.js. */
+  const baseAppConfig = await getAppConfig({ baseOnly: true });
+  configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
   const projectRoot = path.resolve(__dirname, '../..');
@@ -259,7 +265,7 @@ const startServer = async () => {
   // previously loaded batch is unregistered). Hooks are read from the BASE config only —
   // they register once, process-wide; per-user/tenant differences belong inside the hook
   // (via its context), not in per-override module lists.
-  const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
+  const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
   await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
     basePath: path.resolve(__dirname, '../..'),
   });

@@ -133,14 +133,37 @@ describe('Startup readiness wiring', () => {
     ).toHaveLength(1);
   });
 
-  it('awaits the shared Redis client before startup cache access', () => {
+  it('awaits the shared Redis client before the merged startup config read', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
     const connectDbIndex = source.indexOf('await connectDb();');
-    const appConfigIndex = source.indexOf('await getAppConfig({ baseOnly: true });');
+    const appConfigIndex = source.indexOf('const appConfig = await getAppConfig();');
 
     expect(redisReadyIndex).toBeGreaterThan(-1);
     expect(connectDbIndex).toBeGreaterThan(redisReadyIndex);
     expect(appConfigIndex).toBeGreaterThan(redisReadyIndex);
+  });
+
+  it('reads the merged config for startup consumers and a base-only config for module loading', () => {
+    const appConfigIndex = source.indexOf('const appConfig = await getAppConfig();');
+    const baseConfigIndex = source.indexOf(
+      'const baseAppConfig = await getAppConfig({ baseOnly: true });',
+    );
+    const eventRuntimeIndex = source.indexOf(
+      'configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);',
+    );
+    const toolApprovalIndex = source.indexOf(
+      'const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;',
+    );
+
+    expect(appConfigIndex).toBeGreaterThan(-1);
+    expect(baseConfigIndex).toBeGreaterThan(appConfigIndex);
+    // Event rollout barriers and tool-approval hooks load process-wide, so a `__base__`
+    // override must not be able to choose which modules a worker imports.
+    expect(eventRuntimeIndex).toBeGreaterThan(baseConfigIndex);
+    expect(toolApprovalIndex).toBeGreaterThan(baseConfigIndex);
+    // The startup consumers must never regress to the base-only read, which skips the DB
+    // override merge and silently ignores admin-panel edits.
+    expect(source).not.toContain('const appConfig = await getAppConfig({ baseOnly: true });');
   });
 
   it('configures generation streams before the server accepts requests', () => {

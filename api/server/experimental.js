@@ -513,7 +513,8 @@ if (cluster.isMaster) {
       logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
     });
 
-    /** Initialize app configuration */
+    /** Initialize app configuration — merged, so admin-panel `__base__` overrides reach the
+     *  startup consumers below. */
     const appConfig = await getAppConfig();
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
@@ -521,7 +522,8 @@ if (cluster.isMaster) {
     // Honors the `enabled` kill switch; hooks are base-config-only, registered process-wide.
     // Read from the BASE config specifically — `appConfig` above (getAppConfig() with no
     // principal) still merges DB `__base__` overrides, which must not drive which hook
-    // modules load in every worker (matches api/server/index.js's baseOnly usage).
+    // modules load in every worker. index.js splits the same way: merged config for its
+    // startup consumers, this dedicated base-only read for event rollout and hooks.
     const baseAppConfig = await getAppConfig({ baseOnly: true });
     configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
     const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
