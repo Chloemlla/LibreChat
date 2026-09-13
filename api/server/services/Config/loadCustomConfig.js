@@ -204,6 +204,15 @@ async function loadCustomConfig(printConfig = true) {
       return null;
     }
 
+    if (customConfig.code === 'ENOENT') {
+      i === 0 &&
+        logger.info(
+          `Custom config file not found at ${configPath}; running on environment configuration alone.`,
+        );
+      i === 0 && i++;
+      return null;
+    }
+
     if (customConfig.reason || customConfig.stack) {
       i === 0 && logger.error('Config file YAML format is invalid:', customConfig);
       i === 0 && i++;

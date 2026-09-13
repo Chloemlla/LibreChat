@@ -213,6 +213,26 @@ describe('loadCustomConfig', () => {
     expect(result).toBeNull();
   });
 
+  it('should report a missing local config file at info level, not as invalid YAML', async () => {
+    jest.resetModules();
+    const { loadYaml: isolatedLoadYaml } = require('@librechat/api');
+    const { logger: isolatedLogger } = require('@librechat/data-schemas');
+    const loadCustomConfigIsolated = require('./loadCustomConfig');
+    process.env.CONFIG_PATH = 'nonExistentConfig.yaml';
+    const enoent = Object.assign(new Error('ENOENT: no such file or directory'), {
+      code: 'ENOENT',
+    });
+    isolatedLoadYaml.mockReturnValueOnce(enoent);
+
+    const result = await loadCustomConfigIsolated();
+
+    expect(result).toBeNull();
+    expect(isolatedLogger.error).not.toHaveBeenCalled();
+    expect(isolatedLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining('Custom config file not found at nonExistentConfig.yaml'),
+    );
+  });
+
   it('should not cache the config if cache is set to false', async () => {
     const mockConfig = {
       version: '1.0',
