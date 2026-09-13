@@ -1,6 +1,5 @@
 import type { TStoredWidget } from 'librechat-data-provider';
-import type { WidgetResultDbMethods } from './results';
-import type { WidgetCompileJobParams } from './job';
+import type { WidgetCompileDbMethods, WidgetCompileJobParams } from './job';
 import type { ServerRequest } from '~/types';
 import { runWidgetCompile } from './job';
 
@@ -25,7 +24,7 @@ const createJob = () => {
   const saveMessage = jest.fn().mockResolvedValue({ messageId: MESSAGE_ID });
   const generate = jest.fn().mockResolvedValue(COMPONENT);
   const getMessage = jest.fn().mockResolvedValue({ conversationId: CONVERSATION_ID });
-  const db = { getMessage, saveMessage } as unknown as WidgetResultDbMethods;
+  const db = { getMessage, saveMessage } as unknown as WidgetCompileDbMethods;
   const params: WidgetCompileJobParams = {
     req: createRequest(),
     messageId: MESSAGE_ID,

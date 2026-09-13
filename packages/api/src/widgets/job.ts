@@ -1,13 +1,17 @@
 import { logger } from '@librechat/data-schemas';
 import type { TStoredWidget } from 'librechat-data-provider';
+import type { EndpointDbMethods, ServerRequest } from '~/types';
 import type { WidgetResultDbMethods } from './results';
-import type { ServerRequest } from '~/types';
 import { validateWidgetCode, widgetRejectionMessage } from './validate';
 import { generateWidgetCode } from './generate';
 import { storeWidgetEntry } from './results';
 
 /** What a compile that reached the provider but produced nothing usable reads as. */
 const WIDGET_COMPILE_FAILED_ERROR = 'The widget could not be compiled';
+
+/** The two database surfaces a compile needs: the provider credentials the
+ *  compile call reads, and the message methods that settle the entry. */
+export interface WidgetCompileDbMethods extends EndpointDbMethods, WidgetResultDbMethods {}
 
 export interface WidgetCompileJobParams {
   /** The request that started the compile, held for its config and its user. */
@@ -17,7 +21,7 @@ export interface WidgetCompileJobParams {
   spec: string;
   endpoint: string;
   model: string;
-  db: WidgetResultDbMethods;
+  db: WidgetCompileDbMethods;
   /** When the entry was first written as `pending`. Carried through rather than
    *  re-read, so the staleness rule measures the compile and not the settle. */
   startedAt: number;

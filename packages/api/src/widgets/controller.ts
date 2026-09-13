@@ -1,9 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import type { TStoredWidget, TWidgetGenerateResponse } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { EndpointDbMethods, ServerRequest } from '~/types';
-import type { WidgetResultDbMethods } from './results';
-import type { WidgetCompileJobParams } from './job';
+import type { ServerRequest } from '~/types';
+import type { WidgetCompileDbMethods, WidgetCompileJobParams } from './job';
 import {
   loadOwnedMessage,
   normalizeStoredWidgets,
@@ -20,7 +19,7 @@ export type WidgetCompileJob = (params: WidgetCompileJobParams) => void;
 
 /** The route passes `~/models`, which carries both the provider-credential and
  *  the message-storage methods this path needs. */
-export interface WidgetGenerateDbMethods extends EndpointDbMethods, WidgetResultDbMethods {}
+export type WidgetGenerateDbMethods = WidgetCompileDbMethods;
 
 export interface WidgetGenerateHandlerDeps {
   db: WidgetGenerateDbMethods;
