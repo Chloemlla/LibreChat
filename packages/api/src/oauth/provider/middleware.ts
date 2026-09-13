@@ -106,7 +106,7 @@ function sendAuthError(res: Response, error: unknown): void {
 export function createRequireOAuthScope(
   mongoose: typeof import('mongoose'),
   requiredScope: string,
-) {
+): (req: OAuthScopeRequest, res: Response, next: NextFunction) => Promise<void> {
   const models = getModels(mongoose);
 
   return async (req: OAuthScopeRequest, res: Response, next: NextFunction) => {

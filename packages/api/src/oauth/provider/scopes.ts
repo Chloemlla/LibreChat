@@ -99,7 +99,10 @@ export const apiScopes = [
   },
 ] as const;
 
-export const oauthScopes = [...identityScopes, ...apiScopes] as const;
+export const oauthScopes: readonly [...typeof identityScopes, ...typeof apiScopes] = [
+  ...identityScopes,
+  ...apiScopes,
+];
 export type OAuthScopeKey = (typeof oauthScopes)[number]['key'];
 
 export const defaultOAuthScopes: OAuthScopeKey[] = ['openid', 'profile', 'admin:identity'];

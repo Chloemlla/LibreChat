@@ -9,7 +9,16 @@ import type {
   IUser,
   OAuthCodeChallengeMethod,
 } from '@librechat/data-schemas';
-import type { OAuthClientInput, OAuthClientResponse, OAuthModels, OAuthUserInfo } from './types';
+import type {
+  OAuthAccessContext,
+  OAuthClientInput,
+  OAuthClientResponse,
+  OAuthIntrospectionResult,
+  OAuthModels,
+  OAuthProviderMetadata,
+  OAuthUserInfo,
+  TokenExchangeResult,
+} from './types';
 import { defaultOAuthScopes, getUnknownScopes, oauthScopes } from './scopes';
 import { OAuthProviderError, oauthError } from './errors';
 
@@ -563,7 +572,7 @@ export async function exchangeAuthorizationCode(
     redirectUri?: string;
     codeVerifier?: string;
   },
-) {
+): Promise<TokenExchangeResult> {
   if (!params.code || !params.redirectUri) {
     oauthError('invalid_request', 'code and redirect_uri are required');
   }
@@ -609,7 +618,7 @@ export async function refreshOAuthAccessToken(
     client: IOAuthClient;
     refreshToken?: string;
   },
-) {
+): Promise<TokenExchangeResult> {
   if (!params.refreshToken) {
     oauthError('invalid_request', 'refresh_token is required');
   }
@@ -653,7 +662,7 @@ export async function validateAccessToken(
   models: OAuthModels,
   tokenValue?: string,
   requiredScope?: string,
-) {
+): Promise<OAuthAccessContext> {
   if (!tokenValue) {
     oauthError('invalid_token', 'Bearer access token is required', 401);
   }
@@ -690,7 +699,7 @@ export async function introspectToken(
     client: IOAuthClient;
     token?: string;
   },
-) {
+): Promise<OAuthIntrospectionResult> {
   if (!params.token) {
     oauthError('invalid_request', 'token is required');
   }
@@ -822,7 +831,7 @@ export function buildUserInfo(user: IUser, scopes: string[]): OAuthUserInfo {
   return response;
 }
 
-export function buildMetadata(issuer: string) {
+export function buildMetadata(issuer: string): OAuthProviderMetadata {
   return {
     issuer,
     authorization_endpoint: `${issuer}/oauth/authorize`,

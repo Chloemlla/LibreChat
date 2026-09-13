@@ -39,6 +39,25 @@ export interface OAuthProviderHandlerOptions {
   getLoginRedirect?: (req: Request) => string;
 }
 
+export interface OAuthProviderHandlers {
+  metadata: RequestHandler;
+  scopes: RequestHandler;
+  authorizePage: RequestHandler;
+  authorizeDecision: RequestHandler;
+  token: RequestHandler;
+  userinfo: RequestHandler;
+  introspect: RequestHandler;
+  revoke: RequestHandler;
+  listClients: RequestHandler;
+  createClient: RequestHandler;
+  getClient: RequestHandler;
+  updateClient: RequestHandler;
+  rotateClientSecret: RequestHandler;
+  deleteClient: RequestHandler;
+  listGrants: RequestHandler;
+  revokeGrant: RequestHandler;
+}
+
 function getModels(mongoose: typeof import('mongoose')): OAuthModels {
   return {
     OAuthAuthorizationCode: mongoose.models
@@ -268,7 +287,7 @@ function getRequestUser(req: OAuthRequest): IUser | null {
 export function createOAuthProviderHandlers(
   mongoose: typeof import('mongoose'),
   options: OAuthProviderHandlerOptions = {},
-) {
+): OAuthProviderHandlers {
   const models = getModels(mongoose);
   const getIssuer = options.getIssuer ?? defaultIssuer;
   const getLoginRedirect = options.getLoginRedirect ?? defaultLoginRedirect;

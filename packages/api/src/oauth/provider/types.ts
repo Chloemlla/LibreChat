@@ -102,4 +102,44 @@ export interface TokenIssueResult {
   refreshTokenExpiresIn: number;
 }
 
+export interface TokenExchangeResult extends TokenIssueResult {
+  scopes: string[];
+  user: IUser;
+}
+
+export interface OAuthProviderMetadata {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  userinfo_endpoint: string;
+  introspection_endpoint: string;
+  revocation_endpoint: string;
+  response_types_supported: string[];
+  grant_types_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+  code_challenge_methods_supported: string[];
+  scopes_supported: string[];
+}
+
+export type OAuthIntrospectionResult =
+  | { active: false }
+  | {
+      active: true;
+      client_id: string;
+      sub: string;
+      username: string | undefined;
+      scope: string;
+      exp: number;
+      token_type: string;
+      role: string | undefined;
+      roles: string[] | undefined;
+      isAdmin: boolean | undefined;
+      is_admin: boolean | undefined;
+      admin: boolean | undefined;
+      synapseAdmin: boolean | undefined;
+      synapse_admin: boolean | undefined;
+      isTrusted: boolean | undefined;
+      is_trusted: boolean | undefined;
+    };
+
 export type ObjectIdLike = Types.ObjectId | string;
