@@ -191,8 +191,8 @@ export type MCPAllowlistResolver = (
   ctx?: MCPAllowlistContext,
 ) => Promise<{ allowedDomains?: string[] | null; allowedAddresses?: string[] | null }>;
 
-/** Effective allowlists resolved for a request. */
-interface ResolvedMCPAllowlists {
+/** Effective allowlists: either resolved for a request, or the boot/fallback copies. */
+export interface MCPAllowlists {
   allowedDomains?: string[] | null;
   allowedAddresses?: string[] | null;
 }
@@ -214,9 +214,10 @@ export class MCPServersRegistry {
   private readonly dbConfigsRepo: ServerConfigsDB;
   private readonly cacheConfigsRepo: IServerConfigsRepositoryInterface;
   private readonly configCacheRepo: IServerConfigsRepositoryInterface;
-  /** YAML-derived base allowlists; used at boot and as the fallback when no resolver is set. */
-  private readonly allowedDomains?: string[] | null;
-  private readonly allowedAddresses?: string[] | null;
+  /** YAML-derived base allowlists; used at boot and as the fallback when no resolver is set.
+   *  {@link applyBaseAllowlists} replaces them when the app layer re-applies boot settings. */
+  private allowedDomains?: string[] | null;
+  private allowedAddresses?: string[] | null;
   /** Resolves the per-request (tenant-scoped) merged allowlists; falls back to the base above. */
   private readonly allowlistResolver?: MCPAllowlistResolver;
   private readonly readThroughCache: ReadThroughCache<t.ParsedServerConfig | undefined>;
@@ -316,6 +317,25 @@ export class MCPServersRegistry {
   /** Returns true when no explicit allowedDomains allowlist is configured, enabling SSRF TOCTOU protection */
   public shouldEnableSSRFProtection(): boolean {
     return !Array.isArray(this.allowedDomains) || this.allowedDomains.length === 0;
+  }
+
+  /**
+   * Replaces the boot/fallback allowlists captured from the deployment config.
+   *
+   * Request-time decisions already resolve through {@link resolveAllowlists}, so an
+   * admin-panel `mcpSettings` change reaches live traffic without this. What the base
+   * copies still decide is the cluster init fingerprint
+   * (`MCPServersInitializer.configHash`) and the value used when no resolver is injected
+   * or the resolver throws; re-applying keeps those from being the one part of the
+   * MCP settings only a restart can change.
+   *
+   * The app layer re-applies only after the config caches the values came from have been
+   * cleared: settings resolved from a cache the mutation had not yet invalidated would
+   * install the pre-change allowlists over the new ones.
+   */
+  public applyBaseAllowlists(allowlists: MCPAllowlists): void {
+    this.allowedDomains = allowlists.allowedDomains;
+    this.allowedAddresses = allowlists.allowedAddresses;
   }
 
   /**
@@ -795,7 +815,7 @@ export class MCPServersRegistry {
     // allowlists once at tenant scope and fold them into each config-cache key so a tenant
     // whose allowlist rejects a URL cannot poison the shared key for a tenant that allows it.
     const { allowedDomains, allowedAddresses } = await this.resolveAllowlists();
-    const allowlists: ResolvedMCPAllowlists = { allowedDomains, allowedAddresses };
+    const allowlists: MCPAllowlists = { allowedDomains, allowedAddresses };
 
     /** Single snapshot of the YAML cache for the whole pass: in the Redis aggregate-key backend, every per-name get() reads and deserializes the full map, so N concurrent per-server lookups would issue N full-map reads. The snapshot also keeps the unchanged-YAML comparison consistent against one view of YAML across all entries. */
     const yamlSnapshot = await this.cacheConfigsRepo.getAll();
@@ -859,7 +879,7 @@ export class MCPServersRegistry {
   private async ensureSingleConfigServer(
     serverName: string,
     rawConfig: t.MCPOptions,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
     limit: <T>(task: () => Promise<T>) => Promise<T>,
   ): Promise<t.ParsedServerConfig | undefined> {
     const cacheKey = this.configCacheKey(serverName, rawConfig, allowlists);
@@ -909,7 +929,7 @@ export class MCPServersRegistry {
     cacheKey: string,
     serverName: string,
     rawConfig: t.MCPOptions,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
   ): Promise<t.ParsedServerConfig | undefined> {
     const prefix = '[MCP][config]';
     logger.info(`${prefix} Lazy-initializing config-source server`);
@@ -1149,7 +1169,7 @@ export class MCPServersRegistry {
   private configCacheKey(
     serverName: string,
     rawConfig: t.MCPOptions,
-    allowlists?: ResolvedMCPAllowlists,
+    allowlists?: MCPAllowlists,
   ): string {
     const payload = {
       rawConfig,

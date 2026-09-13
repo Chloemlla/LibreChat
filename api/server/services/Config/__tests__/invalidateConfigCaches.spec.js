@@ -2,6 +2,8 @@
 
 const mockClearAppConfigCache = jest.fn().mockResolvedValue(undefined);
 const mockClearOverrideCache = jest.fn().mockResolvedValue(undefined);
+const mockGetAppConfig = jest.fn().mockResolvedValue({ availableTools: {} });
+const mockApplyMCPBootConfig = jest.fn();
 
 jest.mock('~/cache/getLogStores', () => {
   return jest.fn(() => ({}));
@@ -34,10 +36,11 @@ jest.mock('../getCachedTools', () => ({
 const mockClearMcpConfigCache = jest.fn().mockResolvedValue(undefined);
 jest.mock('@librechat/api', () => ({
   createAppConfigService: jest.fn(() => ({
-    getAppConfig: jest.fn().mockResolvedValue({ availableTools: {} }),
+    getAppConfig: mockGetAppConfig,
     clearAppConfigCache: mockClearAppConfigCache,
     clearOverrideCache: mockClearOverrideCache,
   })),
+  applyMCPBootConfig: mockApplyMCPBootConfig,
   clearMcpConfigCache: mockClearMcpConfigCache,
   createCodeEnvironmentRegistry: jest.fn(() => ({})),
   mergeAccessibleCodeEnvironments: jest.fn(({ appConfig }) => appConfig),
@@ -122,5 +125,31 @@ describe('invalidateConfigCaches', () => {
 
     expect(mockClearOverrideCache).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCachedTools).toHaveBeenCalledWith({ invalidateGlobal: true });
+  });
+
+  it('re-applies the MCP boot settings from a config read after the caches settle', async () => {
+    const order = [];
+    mockClearAppConfigCache.mockImplementation(async () => {
+      order.push('clear');
+    });
+    mockGetAppConfig.mockImplementation(async () => {
+      order.push('read');
+      return { availableTools: {}, mcpSettings: { allowedDomains: ['yaml.com'] } };
+    });
+
+    await invalidateConfigCaches();
+
+    // Reading inside the batch would resolve from the cache being invalidated and install
+    // the pre-change allowlists over the ones the mutation just wrote.
+    expect(order).toEqual(['clear', 'read']);
+    expect(mockApplyMCPBootConfig).toHaveBeenCalledWith({ allowedDomains: ['yaml.com'] });
+  });
+
+  it('resolves when the MCP boot refresh fails', async () => {
+    mockGetAppConfig.mockRejectedValueOnce(new Error('config read failed'));
+
+    await expect(invalidateConfigCaches()).resolves.not.toThrow();
+
+    expect(mockApplyMCPBootConfig).not.toHaveBeenCalled();
   });
 });

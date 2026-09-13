@@ -97,13 +97,22 @@ describe('v1 experimental gate, asserted at real entry points', () => {
     expect((await service.getLimits()).enabled).toBe(false);
   });
 
-  it('reports limits DISABLED under the SCHEDULES_DISABLED lever, so writes and fires refuse', async () => {
+  it('reports limits DISABLED under the SCHEDULES_DISABLED lever when the config states no policy', async () => {
     process.env.SCHEDULES_DISABLED = 'true';
-    // Even with an explicit opt-in, the env stop must be visible wherever limits are
-    // consulted — not only at the engine tick.
-    const service = makeService({ interfaceConfig: { schedules: true } });
+    // The base config never opts in here, so the env lever is the effective stop and
+    // must be visible wherever limits are consulted — not only at the engine tick.
+    const service = makeService({});
     expect((await service.getLimits()).enabled).toBe(false);
     expect(await service.engineDeps.isGloballyDisabled()).toBe(true);
+  });
+
+  it('lets an explicit base opt-in win over the SCHEDULES_DISABLED lever', async () => {
+    // The config field is authoritative; the env variable is only the fallback for a
+    // deployment whose config says nothing about schedules.
+    process.env.SCHEDULES_DISABLED = 'true';
+    const service = makeService({ interfaceConfig: { schedules: true } });
+    expect((await service.getLimits()).enabled).toBe(true);
+    expect(await service.engineDeps.isGloballyDisabled()).toBe(false);
   });
 
   it('DOES arm the engine when the base is merely absent, so principal-scoped enables work', async () => {
@@ -141,7 +150,7 @@ describe('v1 experimental gate, asserted at real entry points', () => {
     // Run Now dispatches the same billed generation as an automatic fire, so gating only
     // the engine tick would leave this path open.
     process.env.SCHEDULES_DISABLED = 'true';
-    const service = makeService({ interfaceConfig: { schedules: true } });
+    const service = makeService({});
     const result = await service.fireScheduleNow(schedule, limits);
     expect(result).toEqual({ fired: false, skipped: 'disabled' });
   });

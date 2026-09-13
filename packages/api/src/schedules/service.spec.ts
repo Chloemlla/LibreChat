@@ -1423,16 +1423,22 @@ describe('global kill switch', () => {
     expect(await service.engineDeps.isGloballyDisabled()).toBe(false);
   });
 
-  it('trips on the SCHEDULES_DISABLED env lever without reading config', async () => {
+  it('trips on the SCHEDULES_DISABLED env lever when the base config states no policy', async () => {
     process.env.SCHEDULES_DISABLED = 'true';
-    // Throwing getAppConfig proves the env lever works even when the config plane is
-    // unhealthy — the case where a config-dependent kill switch would fail.
-    const getAppConfig = jest.fn(async () => {
-      throw new Error('config plane down');
-    }) as unknown as SchedulesServiceDeps['getAppConfig'];
-    const service = makeService(noRuns(), getAppConfig);
+    const service = makeService(noRuns());
     expect(await service.engineDeps.isGloballyDisabled()).toBe(true);
-    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit base opt-in win over the SCHEDULES_DISABLED env lever', async () => {
+    // The config field is authoritative; the env variable is only the fallback for a
+    // deployment whose config says nothing about schedules.
+    process.env.SCHEDULES_DISABLED = 'true';
+    const getAppConfig = jest.fn(async () => ({
+      interfaceConfig: { schedules: true },
+    })) as unknown as SchedulesServiceDeps['getAppConfig'];
+    const service = makeService(noRuns(), getAppConfig);
+    expect(await service.engineDeps.isGloballyDisabled()).toBe(false);
+    expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
   });
 
   it('trips on `interface.schedules: false` read from the BASE config only', async () => {

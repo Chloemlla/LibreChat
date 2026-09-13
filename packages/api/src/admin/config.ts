@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
 import {
   BASE_PRINCIPAL_CONFIG_SECTIONS,
@@ -7,6 +8,7 @@ import {
   INTERFACE_PERMISSION_FIELDS,
   RUNTIME_CONFIG_INTERFACE_FIELDS,
   PERMISSION_SUB_KEYS,
+  configSchema,
   hasProcessMCPServerConfig,
   isProcessMCPServerConfig,
   isProcessMCPServerField,
@@ -242,6 +244,106 @@ export interface AdminConfigDeps {
 }
 
 // ── Validation helpers ───────────────────────────────────────────────
+
+/** A section-keyed overrides document as a caller sends it, before it is parsed. */
+type RawOverrides = { [section: string]: unknown };
+
+/**
+ * The document `librechat.yaml` is validated as, used as the gate an overrides payload has to
+ * pass: the payload is a section-keyed fragment of that document, and `strict` is what rejects
+ * an unknown section — the override that would sit in Mongo and never merge (see
+ * {@link isFragmentIssue} for what a fragment is not held to).
+ *
+ * `mcpServers` is shape-checked but not value-checked: `filterMCPServerOverrides` merges each
+ * server override into the base server field by field, and `MCPOptionsSchema` is a `type`-keyed
+ * union of *complete* transports, so an override that only retargets one server's `url` is
+ * exactly what the merge is built for and exactly what the union rejects. The AppConfig
+ * spellings the read path normalizes are accepted for the same reason the resolution layer
+ * merges them: an override stored under `interfaceConfig`/`mcpConfig`/`turnstileConfig` already
+ * reaches the running config under that name.
+ */
+const overridePayloadSchema = configSchema
+  .extend({
+    mcpServers: z.record(z.string(), z.unknown()).optional(),
+    mcpConfig: z.record(z.string(), z.unknown()).optional(),
+    interfaceConfig: configSchema.shape.interface,
+    turnstileConfig: configSchema.shape.turnstile,
+  })
+  .strict();
+
+export interface ConfigOverrideIssue {
+  path: string;
+  message: string;
+}
+
+/**
+ * Whether an issue describes the fragment rather than the payload.
+ *
+ * An override omits whatever it does not change and the merge completes the document from the
+ * base config, so two things a whole-config parse treats as failures are not:
+ *
+ * - a missing value: a required field the payload leaves out is supplied by the merged
+ *   document (or by the section's own default), so only a value the caller *did* send, with
+ *   the wrong type or out of range, is the payload's own error.
+ * - `custom`: refinements assert across fields the payload is free to omit
+ *   (`skillSync.github.enabled` without `sources`, `cloudfront.invalidateOnDelete` without
+ *   `distributionId`, an `endpoints` block with no keys), and zod reports those and genuine
+ *   single-field refinement failures alike.
+ */
+function isFragmentIssue(issue: z.ZodIssue): boolean {
+  if (issue.code === z.ZodIssueCode.invalid_type) {
+    return issue.received === 'undefined';
+  }
+  return issue.code === z.ZodIssueCode.custom;
+}
+
+/**
+ * A schema that throws while parsing (a transform, not a refinement) is not evidence the
+ * payload is wrong, so it is logged and the payload is let through rather than blocked.
+ */
+function parseOverridePayload(payload: unknown): z.ZodError | null {
+  try {
+    const result = overridePayloadSchema.safeParse(payload);
+    return result.success ? null : result.error;
+  } catch (error) {
+    logger.error('[adminConfig] Failed to validate config override payload:', error);
+    return null;
+  }
+}
+
+/** Schema violations in an overrides payload; empty when it is an acceptable fragment. */
+export function getConfigOverrideIssues(payload: unknown): ConfigOverrideIssue[] {
+  const error = parseOverridePayload(payload);
+  if (!error) {
+    return [];
+  }
+  return error.issues
+    .filter((issue) => !isFragmentIssue(issue))
+    .map((issue) => ({ path: issue.path.join('.'), message: issue.message }));
+}
+
+/**
+ * Expands a patch payload's dot-paths into the nested document the schema describes, so both
+ * write paths are gated by the same schema. Segment safety is already enforced by
+ * `isValidFieldPath` before a patch reaches here, which is what keeps the assignment below
+ * away from `__proto__` and friends.
+ */
+function expandFieldPaths(fields: Record<string, unknown>): RawOverrides {
+  const expanded: RawOverrides = {};
+  for (const [fieldPath, value] of Object.entries(fields)) {
+    const segments = fieldPath.split('.');
+    let cursor = expanded;
+    for (const segment of segments.slice(0, -1)) {
+      const nested = cursor[segment];
+      if (nested == null || typeof nested !== 'object' || Array.isArray(nested)) {
+        cursor[segment] = {};
+      }
+      cursor = cursor[segment] as RawOverrides;
+    }
+    cursor[segments[segments.length - 1]] = value;
+  }
+  return expanded;
+}
 
 const CONFIG_PRINCIPAL_TYPES = new Set([
   PrincipalType.USER,
@@ -714,6 +816,14 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         }
       }
 
+      const overrideIssues = getConfigOverrideIssues(filteredOverrides);
+      if (overrideIssues.length > 0) {
+        return res.status(400).json({
+          error: 'Invalid config override payload',
+          details: overrideIssues,
+        });
+      }
+
       const encryptedOverrides = encryptConfigSecrets(filteredOverrides);
       const needsExistingSecrets = getConfigSecretSections().some((section) =>
         isConfigSecretPreservablePatch(
@@ -894,6 +1004,11 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         }
         seen.add(entry.fieldPath);
         fields[entry.fieldPath] = entry.value;
+      }
+
+      const fieldIssues = getConfigOverrideIssues(expandFieldPaths(fields));
+      if (fieldIssues.length > 0) {
+        return res.status(400).json({ error: 'Invalid config field patch', details: fieldIssues });
       }
 
       if (priority != null && !hasBroadManage) {

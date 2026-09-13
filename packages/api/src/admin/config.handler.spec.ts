@@ -759,6 +759,38 @@ describe('createAdminConfigHandlers', () => {
       expect(res.body!.message).toBeDefined();
       expect(deps.upsertConfig).not.toHaveBeenCalled();
     });
+
+    it('rejects an override payload the config schema cannot accept', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { overrides: { interface: { modelSelect: 'yes' } } },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({
+        error: 'Invalid config override payload',
+        details: [{ path: 'interface.modelSelect', message: expect.any(String) }],
+      });
+      expect(deps.upsertConfig).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown override section instead of storing a dead override', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { overrides: { interfase: { modelSelect: false } } },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(deps.upsertConfig).not.toHaveBeenCalled();
+    });
   });
 
   describe('deleteConfigField', () => {
@@ -1389,6 +1421,38 @@ describe('createAdminConfigHandlers', () => {
       await handlers.patchConfigField(req, res);
 
       expect(res.statusCode).toBe(400);
+    });
+
+    it('rejects a field patch whose value the config schema cannot accept', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'interface.modelSelect', value: 'yes' }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({
+        error: 'Invalid config field patch',
+        details: [{ path: 'interface.modelSelect', message: expect.any(String) }],
+      });
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('rejects a field patch onto a section the config schema does not know', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'interfase.modelSelect', value: false }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
     });
   });
 

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { CacheKeys } = require('librechat-data-provider');
 const { AppService, logger } = require('@librechat/data-schemas');
 const {
+  applyMCPBootConfig,
   createAppConfigService,
   clearMcpConfigCache,
   createCodeEnvironmentRegistry,
@@ -71,7 +72,7 @@ const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfi
 /**
  * Invalidate all config-related caches after an admin config mutation.
  * Clears the base config, per-principal override caches, tool caches,
- * and the MCP config-source server cache.
+ * and the MCP config-source server cache, then re-applies the MCP boot settings.
  * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
  */
 async function invalidateConfigCaches(tenantId) {
@@ -91,6 +92,20 @@ async function invalidateConfigCaches(tenantId) {
     if (results[i].status === 'rejected') {
       logger.error(`[invalidateConfigCaches] ${labels[i]} failed:`, results[i].reason);
     }
+  }
+
+  /**
+   * Deliberately outside the batch above and after it settles: the re-read has to see the
+   * config the mutation just wrote, and `getAppConfig` would otherwise resolve from the
+   * cache `clearAppConfigCache` is still clearing — installing the pre-change MCP
+   * allowlists over the new ones. `applyMCPBootConfig` is a no-op when the MCP registry
+   * has not been created yet, which is the normal case for a save during startup.
+   */
+  try {
+    const appConfig = await getAppConfig({ baseOnly: true });
+    applyMCPBootConfig(appConfig?.mcpSettings);
+  } catch (error) {
+    logger.error('[invalidateConfigCaches] applyMCPBootConfig failed:', error);
   }
 }
 

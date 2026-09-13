@@ -256,10 +256,12 @@ export interface ScheduleEngineDeps {
   countActiveRunsGlobal: () => Promise<number>;
   /**
    * The GLOBAL kill switch, deliberately distinct from per-principal availability.
-   * True when scheduling is stopped for the whole deployment: the SCHEDULES_DISABLED
-   * env lever (works even when the config plane is unhealthy), or `interface.schedules:
+   * True when scheduling is stopped for the whole deployment: `interface.schedules:
    * false` in the BASE config — read base-only so no role/user/tenant override can
-   * re-enable it. Checked once per engine tick, so the uncached read is negligible.
+   * re-enable it — or, when that field is absent, the SCHEDULES_DISABLED env lever.
+   * The config field is authoritative, so an explicit opt-in in the config is not
+   * stopped by the env variable. Checked once per engine tick, so the uncached read
+   * is negligible.
    */
   isGloballyDisabled: () => Promise<boolean>;
   /** Whether the run owner's account deletion has begun. Fail-closed (unknown == true). */

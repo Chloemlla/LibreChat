@@ -844,6 +844,48 @@ describe('AppService updating app config and issuing warnings', () => {
     );
   });
 
+  it('falls back to the CDN_PROVIDER environment variable for fileStrategy', async () => {
+    process.env.CDN_PROVIDER = FileSources.s3;
+
+    const result = await AppService({ config: {} });
+
+    expect(result.fileStrategy).toBe(FileSources.s3);
+  });
+
+  it('prefers the fileStrategy config field over the CDN_PROVIDER environment variable', async () => {
+    process.env.CDN_PROVIDER = FileSources.s3;
+
+    const result = await AppService({ config: { fileStrategy: FileSources.firebase } });
+
+    expect(result.fileStrategy).toBe(FileSources.firebase);
+  });
+
+  it('ignores an unrecognized CDN_PROVIDER value', async () => {
+    process.env.CDN_PROVIDER = 'not-a-storage-backend';
+
+    const result = await AppService({ config: {} });
+
+    expect(result.fileStrategy).toBe(FileSources.local);
+  });
+
+  it('falls back to the balance environment variables for keys `balance` leaves unset', async () => {
+    process.env.CHECK_BALANCE = 'true';
+    process.env.START_BALANCE = '7500';
+
+    const result = await AppService({ config: { balance: { startBalance: 1000 } } });
+
+    expect(result.balance).toEqual(expect.objectContaining({ enabled: true, startBalance: 1000 }));
+  });
+
+  it('uses the balance environment variables when `balance` is absent', async () => {
+    process.env.CHECK_BALANCE = 'true';
+    process.env.START_BALANCE = '7500';
+
+    const result = await AppService({ config: {} });
+
+    expect(result.balance).toEqual(expect.objectContaining({ enabled: true, startBalance: 7500 }));
+  });
+
   it('should apply the assistants endpoint configuration correctly to app config', async () => {
     const config: Partial<TCustomConfig> = {
       endpoints: {

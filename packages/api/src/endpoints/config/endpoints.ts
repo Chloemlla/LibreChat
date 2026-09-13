@@ -2,6 +2,7 @@ import {
   AuthType,
   CODE_APPROVAL_MODES,
   EModelEndpoint,
+  getEnabledEndpoints,
   isAgentsEndpoint,
   orderEndpointsConfig,
   defaultAgentCapabilities,
@@ -17,9 +18,79 @@ type PartialEndpointEntry = Partial<TConfig> & Record<string, unknown>;
 type DefaultEndpointsResult = Record<string, PartialEndpointEntry | false | null>;
 type MutableEndpointsConfig = Record<string, PartialEndpointEntry | false | null | undefined>;
 
+/** One endpoint's bootstrap config from the environment, or a falsy value when it offers none. */
+export type EndpointEnvironmentEntry = Partial<TConfig> | false | null | undefined;
+
+/** What the environment offers each built-in endpoint: the bootstrap and fallback for the app config. */
+export type EndpointEnvironmentConfig = { [endpoint: string]: EndpointEnvironmentEntry };
+
+/** Every built-in endpoint a served config can be assembled for; `custom` comes from the config itself. */
+const BUILT_IN_ENDPOINTS: readonly EModelEndpoint[] = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.azureOpenAI,
+  EModelEndpoint.assistants,
+  EModelEndpoint.azureAssistants,
+  EModelEndpoint.agents,
+  EModelEndpoint.bedrock,
+];
+
+const isBuiltInEndpoint = (endpoint: string): boolean =>
+  BUILT_IN_ENDPOINTS.includes(endpoint as EModelEndpoint);
+
+/**
+ * Which endpoints the client should be offered, in the order it should offer them.
+ *
+ * The `ENDPOINTS` environment list decides every endpoint the environment bootstraps — an
+ * operator still hides one by omitting it — and an endpoint the assembled config derives on
+ * its own is kept even when that list omits it, so what an admin config declares is not vetoed
+ * by the environment. `custom` keeps its environment position; its entries are configured and
+ * ordered on their own.
+ */
+export function resolveEnabledEndpoints({
+  configuredEndpoints,
+  environmentConfig,
+  environmentEndpoints = getEnabledEndpoints(),
+}: {
+  configuredEndpoints: string[];
+  environmentConfig?: EndpointEnvironmentConfig;
+  environmentEndpoints?: string[];
+}): string[] {
+  const enabledEndpoints = environmentEndpoints.filter(
+    (endpoint) => endpoint === EModelEndpoint.custom || Boolean(environmentConfig?.[endpoint]),
+  );
+
+  configuredEndpoints.filter(isBuiltInEndpoint).forEach((endpoint) => {
+    const isEnvironmentEndpoint = Boolean(environmentConfig?.[endpoint]);
+    if (!isEnvironmentEndpoint && !enabledEndpoints.includes(endpoint)) {
+      enabledEndpoints.push(endpoint);
+    }
+  });
+
+  return enabledEndpoints;
+}
+
+/** The endpoints the environment bootstraps: its own config, or nothing where it offers none. */
+function resolveDefaultEndpointsConfig({
+  environmentConfig,
+}: {
+  environmentConfig?: EndpointEnvironmentConfig;
+}): DefaultEndpointsResult {
+  return BUILT_IN_ENDPOINTS.reduce<DefaultEndpointsResult>((config, endpoint) => {
+    const environmentEntry = environmentConfig?.[endpoint];
+    if (!environmentEntry) {
+      return config;
+    }
+    config[endpoint] = { ...environmentEntry };
+    return config;
+  }, {});
+}
+
 export interface EndpointsConfigDeps {
   getAppConfig: (params: GetAppConfigOptions) => Promise<AppConfig>;
-  loadDefaultEndpointsConfig: (appConfig: AppConfig) => Promise<DefaultEndpointsResult>;
+  /** The environment's endpoint bootstrap (EndpointService env plus the async Google probe). */
+  loadDefaultEndpointsConfig: (appConfig: AppConfig) => Promise<EndpointEnvironmentConfig>;
   loadCustomEndpointsConfig?: (custom: unknown) => TCustomEndpointsConfig | undefined;
 }
 
@@ -35,7 +106,8 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
 
   async function getEndpointsConfig(req: ServerRequest): Promise<TEndpointsConfig> {
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
-    const defaultEndpointsConfig = await loadDefaultEndpointsConfig(appConfig);
+    const environmentConfig = await loadDefaultEndpointsConfig(appConfig);
+    const defaultEndpointsConfig = resolveDefaultEndpointsConfig({ environmentConfig });
     const customEndpointsConfig = loadCustomEndpointsConfig(appConfig?.endpoints?.custom);
 
     const mergedConfig: MutableEndpointsConfig = {
@@ -153,7 +225,12 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       };
     }
 
-    return orderEndpointsConfig(mergedConfig as TEndpointsConfig);
+    const enabledEndpoints = resolveEnabledEndpoints({
+      configuredEndpoints: Object.keys(mergedConfig),
+      environmentConfig,
+    });
+
+    return orderEndpointsConfig(mergedConfig as TEndpointsConfig, enabledEndpoints);
   }
 
   async function checkCapability(

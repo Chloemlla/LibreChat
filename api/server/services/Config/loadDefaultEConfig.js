@@ -1,39 +1,25 @@
 const { EModelEndpoint, getEnabledEndpoints } = require('librechat-data-provider');
+const { getEndpointEnvironmentConfig } = require('./EndpointService');
 const loadAsyncEndpoints = require('./loadAsyncEndpoints');
-const { config } = require('./EndpointService');
 
 /**
- * Load async endpoints and return a configuration object
+ * The environment bootstrap for endpoint configuration: the per-endpoint config the
+ * environment offers, plus the async Google credential probe. Which of those endpoints
+ * are enabled, and the config served for each, is decided per request from the effective
+ * app config by `resolveEnabledEndpoints` / `getEndpointsConfig` in `@librechat/api`;
+ * this module only reports what the environment can offer them.
+ *
  * @param {AppConfig} appConfig - The app configuration object
- * @returns {Promise<Object.<string, EndpointWithOrder>>} An object whose keys are endpoint names and values are objects that contain the endpoint configuration and an order.
+ * @returns {Promise<Object>} Endpoint name to the config the environment offers it, or a falsy
+ * value when the environment offers none.
  */
-async function loadDefaultEndpointsConfig(appConfig) {
-  const { assistants, azureAssistants, azureOpenAI } = config;
-
-  const enabledEndpoints = getEnabledEndpoints();
-  const { google } = enabledEndpoints.includes(EModelEndpoint.google)
+async function loadEndpointEnvironmentConfig(appConfig) {
+  const environmentConfig = getEndpointEnvironmentConfig();
+  const { google } = getEnabledEndpoints().includes(EModelEndpoint.google)
     ? await loadAsyncEndpoints(appConfig)
     : { google: false };
 
-  const endpointConfig = {
-    [EModelEndpoint.openAI]: config[EModelEndpoint.openAI],
-    [EModelEndpoint.agents]: config[EModelEndpoint.agents],
-    [EModelEndpoint.assistants]: assistants,
-    [EModelEndpoint.azureAssistants]: azureAssistants,
-    [EModelEndpoint.azureOpenAI]: azureOpenAI,
-    [EModelEndpoint.google]: google,
-    [EModelEndpoint.anthropic]: config[EModelEndpoint.anthropic],
-    [EModelEndpoint.bedrock]: config[EModelEndpoint.bedrock],
-  };
-
-  const orderedAndFilteredEndpoints = enabledEndpoints.reduce((config, key, index) => {
-    if (endpointConfig[key]) {
-      config[key] = { ...(endpointConfig[key] ?? {}), order: index };
-    }
-    return config;
-  }, {});
-
-  return orderedAndFilteredEndpoints;
+  return { ...environmentConfig, [EModelEndpoint.google]: google };
 }
 
-module.exports = loadDefaultEndpointsConfig;
+module.exports = loadEndpointEnvironmentConfig;

@@ -21,9 +21,13 @@ jest.mock('@librechat/data-schemas', () => ({
 
 const mockGetDeploymentPluginMcpServers = jest.fn();
 const mockRegisterShutdownTask = jest.fn();
+const mockApplyMCPBootConfig = jest.fn();
 const mockSetHandler = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  get applyMCPBootConfig() {
+    return mockApplyMCPBootConfig;
+  },
   get getDeploymentPluginMcpServers() {
     return mockGetDeploymentPluginMcpServers;
   },

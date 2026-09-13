@@ -463,6 +463,94 @@ describe('createEndpointsConfigService', () => {
       );
       expect(result?.FOO).toEqual(expect.objectContaining({ type: EModelEndpoint.custom }));
     });
+
+    describe('enablement from the effective config', () => {
+      const originalEndpointsEnv = process.env.ENDPOINTS;
+
+      afterEach(() => {
+        if (originalEndpointsEnv === undefined) {
+          delete process.env.ENDPOINTS;
+        } else {
+          process.env.ENDPOINTS = originalEndpointsEnv;
+        }
+      });
+
+      it('still narrows the environment endpoints by the bootstrap ENDPOINTS list', async () => {
+        process.env.ENDPOINTS = EModelEndpoint.openAI;
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.openAI]: { userProvide: false },
+            [EModelEndpoint.google]: { userProvide: false },
+          }),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.openAI]).toBeDefined();
+        expect(result?.[EModelEndpoint.google]).toBeUndefined();
+      });
+
+      it('serves config-derived azure endpoints the bootstrap list omits', async () => {
+        process.env.ENDPOINTS = EModelEndpoint.openAI;
+        const deps = createMockDeps({
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.azureOpenAI]: { modelNames: ['gpt-4'], assistants: true },
+              },
+            }),
+          ),
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.openAI]: { userProvide: false },
+          }),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.azureOpenAI]).toEqual(
+          expect.objectContaining({ userProvide: false }),
+        );
+        expect(result?.[EModelEndpoint.azureAssistants]).toEqual(
+          expect.objectContaining({ userProvide: false }),
+        );
+      });
+
+      it('serves config-derived Vertex Anthropic the bootstrap list omits', async () => {
+        process.env.ENDPOINTS = EModelEndpoint.openAI;
+        const deps = createMockDeps({
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: { [EModelEndpoint.anthropic]: { vertexConfig: { enabled: true } } },
+            }),
+          ),
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.openAI]: { userProvide: false },
+          }),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.anthropic]).toEqual(
+          expect.objectContaining({ userProvide: false }),
+        );
+      });
+
+      it('does not serve a declared endpoint nothing can run', async () => {
+        delete process.env.ENDPOINTS;
+        const deps = createMockDeps({
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: { [EModelEndpoint.openAI]: { titleConvo: true } },
+            }),
+          ),
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({}),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.openAI]).toBeUndefined();
+      });
+    });
   });
 
   describe('checkCapability', () => {

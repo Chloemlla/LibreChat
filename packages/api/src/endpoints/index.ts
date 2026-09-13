@@ -1,3 +1,4 @@
+export * from './access';
 export * from './anthropic';
 export * from './bedrock';
 export * from './config';

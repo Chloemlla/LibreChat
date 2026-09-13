@@ -116,4 +116,23 @@ describe('EndpointService', () => {
 
     expect(config[EModelEndpoint.bedrock]).toEqual({ userProvide: false });
   });
+
+  it('recomputes the environment config when the environment changes after load', () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_USE_VERTEX;
+    const EndpointService = require('../EndpointService');
+    expect(EndpointService.config[EModelEndpoint.anthropic]).toBe(false);
+
+    process.env.ANTHROPIC_API_KEY = 'sk-ant';
+    expect(EndpointService.config[EModelEndpoint.anthropic]).toEqual({ userProvide: false });
+  });
+
+  it('derives the config from an explicitly supplied environment', () => {
+    const { getEndpointEnvironmentConfig } = require('../EndpointService');
+
+    const config = getEndpointEnvironmentConfig({ OPENAI_API_KEY: 'user_provided' });
+
+    expect(config[EModelEndpoint.openAI]).toEqual({ userProvide: true });
+    expect(config[EModelEndpoint.anthropic]).toBe(false);
+  });
 });

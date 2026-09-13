@@ -1,6 +1,7 @@
 import {
   AgentCapabilities,
   EModelEndpoint,
+  fileStorageSchema,
   filtersConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
@@ -141,16 +142,21 @@ export const AppService = async (params?: {
   const skillSync = loadSkillSyncConfig(config);
   const filteredTools = config.filteredTools;
   const includedTools = config.includedTools;
-  const fileStrategy = (config.fileStrategy ?? configDefaults.fileStrategy) as
+  /** The schema field is authoritative; `CDN_PROVIDER` is only a fallback for
+   *  deployments that still set the storage backend through the environment. */
+  const envFileStrategy = fileStorageSchema.safeParse(process.env.CDN_PROVIDER).data;
+  const fileStrategy = (config.fileStrategy ?? envFileStrategy ?? configDefaults.fileStrategy) as
     | FileSources.local
     | FileSources.s3
     | FileSources.firebase
     | FileSources.azure_blob
     | FileSources.cloudfront;
   const startBalance = process.env.START_BALANCE;
-  const balance = config.balance ?? {
+  /** `balance` wins per key; the legacy env variables only fill the keys it leaves unset. */
+  const balance = {
     enabled: process.env.CHECK_BALANCE?.toLowerCase().trim() === 'true',
     startBalance: startBalance ? parseInt(startBalance, 10) : undefined,
+    ...config.balance,
   };
   const transactions = config.transactions ?? configDefaults.transactions;
   const imageOutputType = config?.imageOutputType ?? configDefaults.imageOutputType;

@@ -76,6 +76,7 @@ const mockSetMCPToolsChangedGenerationHandler = jest.fn();
 const mockSetMCPToolsChangedGenerationRenewalHandler = jest.fn();
 const mockSetMCPToolsChangedRevisionHandler = jest.fn();
 const mockRegisterShutdownTask = jest.fn();
+const mockApplyMCPBootConfig = jest.fn();
 const mockUpdateMCPServerTools = jest.fn();
 const mockGetMCPToolsCacheGeneration = jest.fn();
 const mockRenewMCPToolsCacheGeneration = jest.fn();
@@ -83,6 +84,9 @@ const mockGetNextAppToolsPublicationRevision = jest.fn();
 const mockGetDeploymentPluginMcpServers = jest.fn(() => ({}));
 
 jest.mock('@librechat/api', () => ({
+  get applyMCPBootConfig() {
+    return mockApplyMCPBootConfig;
+  },
   get registerShutdownTask() {
     return mockRegisterShutdownTask;
   },
@@ -184,6 +188,29 @@ describe('initializeMCPs', () => {
         undefined,
         expect.any(Function),
       );
+    });
+
+    it('applies the boot MCP settings before catalog recovery starts', async () => {
+      const appConfig = {
+        mcpConfig: null,
+        mcpSettings: { allowedDomains: ['yaml.com'], allowedAddresses: ['10.0.0.0/8'] },
+      };
+      mockGetAppConfig.mockResolvedValue(appConfig);
+      const order = [];
+      mockApplyMCPBootConfig.mockImplementation(() => {
+        order.push('apply');
+      });
+      // Catalog recovery resets the registry and fingerprints these allowlists, so it has
+      // to observe the applied values rather than the ones the constructor was seeded with.
+      mockCreateMCPManager.mockImplementation(async () => {
+        order.push('recover');
+        return mockMCPManagerInstance;
+      });
+
+      await initializeMCPs();
+
+      expect(order).toEqual(['apply', 'recover']);
+      expect(mockApplyMCPBootConfig).toHaveBeenCalledWith(appConfig.mcpSettings);
     });
 
     it('wires a per-request resolver that reads the merged (non-baseOnly) config', async () => {

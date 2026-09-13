@@ -96,12 +96,22 @@ export function getEnabledEndpoints() {
   return enabledEndpoints;
 }
 
-/** Orders an existing EndpointsConfig object based on enabled endpoint/custom ordering */
-export function orderEndpointsConfig(endpointsConfig: t.TEndpointsConfig) {
+/**
+ * Orders an existing EndpointsConfig object based on enabled endpoint/custom ordering.
+ *
+ * `enabledEndpoints` is the authority for the caller's config. The server passes the
+ * set derived from the effective app config (see `resolveEnabledEndpoints` in
+ * `@librechat/api`), so an endpoint enabled by a config override is kept and ordered
+ * instead of being dropped by the environment's bootstrap `ENDPOINTS` list. It defaults
+ * to that environment list for callers with no app config to resolve.
+ */
+export function orderEndpointsConfig(
+  endpointsConfig: t.TEndpointsConfig,
+  enabledEndpoints: string[] = getEnabledEndpoints(),
+) {
   if (!endpointsConfig) {
     return {};
   }
-  const enabledEndpoints = getEnabledEndpoints();
   const endpointKeys = Object.keys(endpointsConfig);
   const defaultCustomIndex = enabledEndpoints.indexOf(EModelEndpoint.custom);
   return endpointKeys.reduce(

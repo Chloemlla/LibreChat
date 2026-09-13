@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { logger } = require('@librechat/data-schemas');
 const {
+  applyMCPBootConfig,
   registerShutdownTask,
   setMCPToolsChangedHandler,
   getDeploymentPluginMcpServers,
@@ -108,6 +109,13 @@ async function initializeMCPs() {
       appConfig?.mcpSettings?.allowedAddresses,
       resolveMCPAllowlists,
     );
+    /**
+     * Must precede `createMCPManager` below: catalog recovery resets the registry and
+     * fingerprints these values for the cluster, so applying them afterwards would leave
+     * the persisted fingerprint describing allowlists this process no longer holds.
+     * `invalidateConfigCaches` re-runs the same apply on an admin config change.
+     */
+    applyMCPBootConfig(appConfig?.mcpSettings);
   } catch (error) {
     logger.error('[MCP] Failed to initialize MCPServersRegistry:', error);
     throw error;

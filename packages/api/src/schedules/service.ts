@@ -353,16 +353,14 @@ export function createSchedulesService(
     const appConfig = user
       ? await deps.getAppConfig(getAppConfigOptionsFromUser(user))
       : await deps.getAppConfig({ baseOnly: true });
-    // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
-    // consulted (write handlers, fire path), not only at the engine tick.
-    if (isEnabled(process.env.SCHEDULES_DISABLED)) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
     const config = appConfig?.interfaceConfig?.schedules;
     // EXPERIMENTAL, default-OFF (v1): scheduled chats are disabled unless an admin
     // explicitly enables them. Absence, null, or `false` all resolve to disabled, so a
     // deployment that never opts in never runs the scheduler. `true` uses the defaults;
     // an object opts in unless it sets `use: false`.
+    // `config` is authoritative: the SCHEDULES_DISABLED env lever only stops a
+    // deployment whose config says nothing about schedules, which this branch already
+    // resolves to disabled — so the lever needs no separate read here.
     if (config == null || config === false) {
       return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
     }
@@ -636,12 +634,6 @@ export function createSchedulesService(
     countActiveRunsGlobal: () => runAsSystem(() => methods.countActiveRuns()),
     isOwnerDeleting: (userId) => deps.isUserDeleting(userId),
     isGloballyDisabled: async () => {
-      // Env first: an incident lever that must work even if the DB/config plane is the
-      // thing failing (a kill switch that needs a healthy DB is the one that fails when
-      // you need it).
-      if (isEnabled(process.env.SCHEDULES_DISABLED)) {
-        return true;
-      }
       // BASE config only: DB principal overrides can narrow availability but must never
       // widen past an operator's global stop, so `schedules: false` in librechat.yaml is
       // genuinely non-overridable rather than emergent from the override filters.
@@ -652,7 +644,15 @@ export function createSchedulesService(
       // maintenance stop silently dropped every occurrence it covered instead of
       // leaving them due.
       const base = await deps.getAppConfig({ baseOnly: true });
-      return isRuntimeDisabled(base?.interfaceConfig?.schedules);
+      const schedules = base?.interfaceConfig?.schedules;
+      // The config field is authoritative: it expresses both the stop and an explicit
+      // opt-in. SCHEDULES_DISABLED is the fallback for a deployment whose config never
+      // states a schedule policy — the default shape, since `interface.schedules` is
+      // absent from the schema defaults.
+      if (schedules != null) {
+        return isRuntimeDisabled(schedules);
+      }
+      return isEnabled(process.env.SCHEDULES_DISABLED);
     },
     // Occupancy is read in SYSTEM scope so the cap is global across tenants (the
     // owner's tenant context would only see its own runs); the claim itself stays in

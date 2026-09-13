@@ -612,6 +612,33 @@ describe('MCPServersRegistry', () => {
       // instead of reusing the first allowlist's cached entry.
       expect(inspectSpy).toHaveBeenCalledTimes(2);
     });
+
+    it('replaces the boot/fallback allowlists when the app layer re-applies boot settings', async () => {
+      const resolver = jest.fn().mockRejectedValue(new Error('DB down'));
+      const reg = createWith(['yaml-only.com'], null, resolver);
+
+      reg.applyBaseAllowlists({ allowedDomains: ['admin-added.com'], allowedAddresses: null });
+
+      expect(reg.getAllowedDomains()).toEqual(['admin-added.com']);
+      expect(reg.getAllowedAddresses()).toBeNull();
+      // The fallback path — the one a failing resolver lands on — must serve the re-applied
+      // copy, not the allowlist the registry was constructed with.
+      await expect(reg.resolveAllowlists()).resolves.toEqual({
+        allowedDomains: ['admin-added.com'],
+        allowedAddresses: null,
+        useSSRFProtection: false,
+      });
+    });
+
+    it('enables SSRF protection when re-applied boot settings drop the allowlist', () => {
+      const reg = createWith(['yaml-only.com'], ['10.0.0.0/8']);
+      expect(reg.shouldEnableSSRFProtection()).toBe(false);
+
+      reg.applyBaseAllowlists({});
+
+      expect(reg.getAllowedDomains()).toBeUndefined();
+      expect(reg.shouldEnableSSRFProtection()).toBe(true);
+    });
   });
 
   describe('reset', () => {

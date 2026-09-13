@@ -70,6 +70,8 @@ export * from './assistants';
 export * from './actions';
 /* Prompts */
 export * from './prompts';
+/* Widgets */
+export * from './widgets';
 /* Projects */
 export * from './projects';
 /* Conversations */
