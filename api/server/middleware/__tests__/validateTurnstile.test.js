@@ -5,7 +5,9 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 
 // Mock dependencies
 jest.mock('~/server/services/start/turnstile');
-jest.mock('~/server/services/Config');
+jest.mock('~/server/services/Config', () => ({
+  getAppConfig: jest.fn(),
+}));
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),

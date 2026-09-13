@@ -72,6 +72,10 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('@librechat/api', () => ({
   buildOAuthFailureLog: (...args) => mockBuildOAuthFailureLog(...args),
   createOpenIDCallbackAuthenticator: (...args) => mockCreateOpenIDCallbackAuthenticator(...args),
+  createOAuthProviderHandlers: jest.fn(() => ({
+    authorizePage: jest.fn((_req, _res, next) => next()),
+    authorizeDecision: jest.fn((_req, _res, next) => next()),
+  })),
   createSetBalanceConfig: jest.fn(() => (_req, _res, next) => next()),
   getOAuthFailureMessage: (...args) => mockGetOAuthFailureMessage(...args),
   redirectToAuthFailure: (...args) => mockRedirectToAuthFailure(...args),

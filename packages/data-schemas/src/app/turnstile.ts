@@ -4,8 +4,8 @@ import type { TCustomConfig, TConfigDefaults } from 'librechat-data-provider';
 
 type TurnstileConfig = NonNullable<TCustomConfig['turnstile']>;
 type TurnstileOptions = NonNullable<TurnstileConfig['options']>;
-type TurnstileSize = TurnstileOptions['size'];
-type TurnstileTheme = TurnstileOptions['theme'];
+type TurnstileSize = NonNullable<TurnstileOptions['size']>;
+type TurnstileTheme = NonNullable<TurnstileOptions['theme']>;
 
 const turnstileSizes: ReadonlySet<TurnstileSize> = new Set([
   'normal',
@@ -58,12 +58,15 @@ export function loadTurnstileConfig(
   const envLanguage = readEnvValue('TURNSTILE_LANGUAGE');
   const envSize = readEnvOption('TURNSTILE_SIZE', turnstileSizes);
   const envTheme = readEnvOption('TURNSTILE_THEME', turnstileThemes);
-  const options = removeNullishValues({
-    ...(defaults as TCustomConfig['turnstile'] | undefined)?.options,
-    ...customTurnstile?.options,
+  const envOptions = removeNullishValues({
     language: envLanguage,
     size: envSize,
     theme: envTheme,
+  });
+  const options = removeNullishValues({
+    ...(defaults as TCustomConfig['turnstile'] | undefined)?.options,
+    ...customTurnstile?.options,
+    ...envOptions,
   });
 
   const loadedTurnstile = removeNullishValues({
