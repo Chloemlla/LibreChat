@@ -268,9 +268,11 @@ const messageSchema: Schema<IMessage> = new Schema(
      */
     quotes: { type: [String], default: undefined },
     /**
-     * Compiled cards the user generated from this message's `GenerateWidget`
+     * Card results the user generated from this message's `GenerateWidget`
      * tag, kept on the message so a refresh restores them instead of losing
-     * the compiled component with the client's in-memory state.
+     * the compiled component with the client's in-memory state. A compile
+     * outlives the request that starts it, so an entry is written here as
+     * `pending` and updated in place once the compile settles.
      */
     widgets: {
       type: [
@@ -279,7 +281,14 @@ const messageSchema: Schema<IMessage> = new Schema(
           spec: { type: String, required: true },
           endpoint: { type: String, required: true },
           model: { type: String, required: true },
-          code: { type: String, required: true },
+          /* Not `required`: entries written before the compile became
+             asynchronous carry only `code`, and rewriting the whole array must
+             not be rejected because one existing entry predates the field. The
+             read path fills both defaults, so consumers always see them. */
+          status: { type: String, enum: ['pending', 'ready', 'failed'] },
+          code: { type: String },
+          error: { type: String },
+          startedAt: { type: Number },
         },
       ],
       default: undefined,

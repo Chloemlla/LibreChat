@@ -15,6 +15,13 @@ export const WIDGET_SPEC_MAX_LENGTH = 16_000;
  */
 export const WIDGET_CODE_MAX_LENGTH = 100_000;
 
+/**
+ * Upper bound on the message a compile is stored against. Message ids are
+ * 24-character ObjectIds or generated UUIDs, so 200 admits every stored message
+ * while keeping a runaway body out of the lookup and the write that follows it.
+ */
+export const WIDGET_MESSAGE_ID_MAX_LENGTH = 200;
+
 /** Why a specification was refused. */
 export type WidgetSpecRejection = 'spec_missing' | 'spec_empty' | 'spec_too_long';
 
@@ -29,6 +36,7 @@ export type WidgetCodeRejection =
 export type WidgetRequestRejection =
   | 'missing_endpoint'
   | 'missing_model'
+  | 'missing_message_id'
   | WidgetSpecRejection;
 
 export type WidgetRejection = WidgetRequestRejection | WidgetCodeRejection;
@@ -48,6 +56,7 @@ export type WidgetRequestResult =
 const REJECTION_MESSAGES: Record<WidgetRejection, string> = {
   missing_endpoint: 'An endpoint is required to compile a widget',
   missing_model: 'A model is required to compile a widget',
+  missing_message_id: 'A message is required to compile a widget',
   spec_missing: 'A widget specification is required',
   spec_empty: 'The widget specification is empty',
   spec_too_long: 'The widget specification is too long',
@@ -153,7 +162,9 @@ export function validateWidgetCode(raw: unknown): WidgetCodeResult {
 /**
  * Reads the compile body after `validateModel` has run, so `model` here is the
  * value that middleware authorized — it trims `req.body.model` in place and the
- * trimmed string is the one the endpoint catalog was checked against.
+ * trimmed string is the one the endpoint catalog was checked against. The
+ * `messageId` names the message the result is stored against, so the caller can
+ * load and authorize it before any provider call.
  */
 export function parseWidgetGenerateRequest(
   raw: Partial<TWidgetGenerateRequest>,
@@ -170,5 +181,9 @@ export function parseWidgetGenerateRequest(
   if (!spec.ok) {
     return { ok: false, rejection: spec.rejection };
   }
-  return { ok: true, value: { endpoint, model, spec: spec.spec } };
+  const messageId = nonEmptyString(raw.messageId);
+  if (messageId == null || messageId.length > WIDGET_MESSAGE_ID_MAX_LENGTH) {
+    return { ok: false, rejection: 'missing_message_id' };
+  }
+  return { ok: true, value: { messageId, spec: spec.spec, endpoint, model } };
 }

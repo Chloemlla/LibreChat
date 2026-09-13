@@ -5,8 +5,8 @@ import {
   useGenerateWidgetMutation,
   useGetModelsQuery,
   useGetWidgetResultsQuery,
-  useSaveWidgetResultMutation,
 } from 'librechat-data-provider/react-query';
+import type { TStoredWidget } from 'librechat-data-provider';
 import type { WidgetHostCommand } from './frame';
 import type { WidgetNodeProps } from './plugin';
 import {
@@ -28,6 +28,11 @@ interface WidgetFailure {
   key: string;
   message: string;
 }
+
+/** How often a card waiting on a compile re-reads the message's results. The compile
+ *  takes the better part of two minutes, so a couple of seconds is latency the user
+ *  cannot perceive against a poll the server serves in a single document read. */
+const WIDGET_POLL_INTERVAL_MS = 2500;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -81,13 +86,21 @@ function WidgetCard({ node }: WidgetNodeProps) {
 
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { data: modelsConfig } = useGetModelsQuery();
-  const { data: widgetResults } = useGetWidgetResultsQuery(messageId);
+
+  /* Whether to poll is held in state rather than read straight off the results it is
+     derived from: the interval is an argument to the call that returns them, so a value
+     computed in a render is always one render behind the data. Holding it carries "a
+     compile is in flight" forward to the render that can act on it, and setting the
+     value it already has re-renders nothing. */
+  const [polling, setPolling] = useState(false);
+  const { data: widgetResults, refetch: refetchWidgetResults } = useGetWidgetResultsQuery(
+    messageId,
+    { refetchInterval: polling ? WIDGET_POLL_INTERVAL_MS : false },
+  );
   const { mutate } = useGenerateWidgetMutation();
-  const { mutate: saveWidget } = useSaveWidgetResultMutation();
 
   const [endpoint, setEndpoint] = useState('');
   const [model, setModel] = useState('');
-  const [compiled, setCompiled] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [failure, setFailure] = useState<WidgetFailure | null>(null);
 
@@ -129,9 +142,9 @@ function WidgetCard({ node }: WidgetNodeProps) {
      back by its own triple. A stored result for another spec is a different card's. */
   const widgets = widgetResults?.widgets;
   const stored = useMemo(() => {
-    const entries = new Map<string, string>();
+    const entries = new Map<string, TStoredWidget>();
     for (const widget of widgets ?? []) {
-      entries.set(`${widget.endpoint}|${widget.model}|${widget.spec}`, widget.code);
+      entries.set(`${widget.endpoint}|${widget.model}|${widget.spec}`, widget);
     }
     return entries;
   }, [widgets]);
@@ -140,10 +153,42 @@ function WidgetCard({ node }: WidgetNodeProps) {
   /* Endpoint keys and model ids cannot contain a pipe, so the first two fields of
      the key cannot be confused with the spec that follows them. */
   const cacheKey = hasSelection ? `${endpoint}|${model}|${spec}` : '';
-  const code = hasSelection ? (compiled.get(cacheKey) ?? stored.get(cacheKey) ?? null) : null;
-  const isCompiling = pendingKey !== null && pendingKey === cacheKey;
-  const failedCompile = failure !== null && failure.key === cacheKey ? failure.message : null;
+  const storedEntry = hasSelection ? stored.get(cacheKey) : undefined;
+  /* Only a finished compile has code to show: one still running has none yet, and one
+     that failed has the compiler's complaint instead. */
+  const code = storedEntry?.status === 'ready' ? (storedEntry.code ?? null) : null;
+  /* The stored half is what a reloaded page renders from: the request that started the
+     compile is long gone, but the entry it left behind is not. */
+  const isCompiling =
+    (pendingKey !== null && pendingKey === cacheKey) || storedEntry?.status === 'pending';
+  /* A recorded failure is shown even when it carries no reason of its own: falling
+     through to the button would hide that the compile already ran and did not finish. */
+  const storedFailure =
+    storedEntry?.status === 'failed'
+      ? (storedEntry.error ?? localize('com_ui_widget_error'))
+      : null;
+  const failedCompile =
+    failure !== null && failure.key === cacheKey ? failure.message : storedFailure;
   const frameFailed = frameState.status === 'failed';
+
+  useEffect(() => {
+    setPolling(isCompiling);
+  }, [isCompiling]);
+
+  /* The marker means "a compile was started and its outcome has not been shown yet", not
+     "the request is unanswered": the request now answers in milliseconds while the compile
+     runs on for minutes behind it. Clearing it on the response would drop the card back to
+     the button with a compile still in flight and nothing left polling for it, so it is
+     cleared when the entry it names settles instead. */
+  useEffect(() => {
+    if (pendingKey === null) {
+      return;
+    }
+    const entry = stored.get(pendingKey);
+    if (entry != null && entry.status !== 'pending') {
+      setPendingKey(null);
+    }
+  }, [pendingKey, stored]);
 
   const postToFrame = useCallback((message: WidgetHostCommand) => {
     frameRef.current?.contentWindow?.postMessage(message, '*');
@@ -159,30 +204,41 @@ function WidgetCard({ node }: WidgetNodeProps) {
   );
 
   const onGenerate = useCallback(() => {
-    if (!hasSelection) {
+    if (!hasSelection || !messageId) {
       return;
     }
     setFailure(null);
     setPendingKey(cacheKey);
     mutate(
-      { spec, endpoint, model },
+      { messageId, spec, endpoint, model },
       {
-        onSuccess: (data) => {
-          setCompiled((previous) => new Map(previous).set(cacheKey, data.code));
-          if (messageId) {
-            saveWidget({ messageId, widget: { spec, endpoint, model, code: data.code } });
-          }
+        /* The request only records the compile and answers with the entry it stored as
+           `pending`, so there is no outcome here to keep — the results query is what
+           brings it back, and this asks it not to wait for the next mount to do so. */
+        onSuccess: () => {
+          setFailure(null);
+          refetchWidgetResults();
         },
         onError: (error) => {
           const message = readErrorMessage(error, localize('com_ui_widget_error'));
           setFailure({ key: cacheKey, message });
-        },
-        onSettled: () => {
+          /* A refused request stores nothing, so there is no entry for the marker to wait
+             on: left set, it would hold the card in the loading state over the error. */
           setPendingKey(null);
         },
       },
     );
-  }, [cacheKey, endpoint, hasSelection, localize, messageId, model, mutate, saveWidget, spec]);
+  }, [
+    cacheKey,
+    endpoint,
+    hasSelection,
+    localize,
+    messageId,
+    model,
+    mutate,
+    refetchWidgetResults,
+    spec,
+  ]);
 
   const onFrameRetry = useCallback(() => {
     if (!code) {
@@ -204,13 +260,15 @@ function WidgetCard({ node }: WidgetNodeProps) {
   }, []);
 
   /**
-   * A stored result is unreachable without the choice that produced it, so the latest
-   * one — the server appends — is adopted once. The refs keep that from fighting the
-   * user: it cannot repeat on a refetch, nor override a choice already made.
+   * A stored entry is unreachable without the choice that produced it, so the latest
+   * one — the server appends — is adopted once. A `pending` entry records that choice
+   * just as a finished one does, so waiting for an outcome would strand the card on the
+   * placeholder of a compile it cannot see. The refs keep that from fighting the user:
+   * it cannot repeat on a refetch, nor override a choice already made.
    */
   useEffect(() => {
     const latest = widgets?.at(-1);
-    if (restoreDoneRef.current || userChosenRef.current || latest == null) {
+    if (restoreDoneRef.current || userChosenRef.current || !latest?.endpoint || !latest.model) {
       return;
     }
     restoreDoneRef.current = true;

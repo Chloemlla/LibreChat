@@ -487,16 +487,11 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
   }
 });
 
-const widgetResults = createWidgetResultHandlers({
-  db,
-  rejectSubagentWrite: rejectSubagentThreadWrite,
-});
+const widgetResults = createWidgetResultHandlers({ db });
 
-// Both must precede the parameterized GET below, which would otherwise swallow
+// Must precede the parameterized GET below, which would otherwise swallow
 // `/widgets/:messageId` as a conversation/message pair.
 router.get('/widgets/:messageId', configMiddleware, widgetResults.read);
-
-router.post('/widgets/:messageId', configMiddleware, widgetResults.write);
 
 router.get('/:conversationId', prepareMessageRequestValidation, async (req, res) => {
   try {

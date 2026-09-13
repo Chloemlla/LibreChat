@@ -1,9 +1,13 @@
 import { logger } from '@librechat/data-schemas';
-import type { TStoredWidget, TWidgetResultsResponse } from 'librechat-data-provider';
+import { WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS } from 'librechat-data-provider';
+import type {
+  TStoredWidget,
+  TWidgetCompileStatus,
+  TWidgetResultsResponse,
+} from 'librechat-data-provider';
 import type { MessageMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
-import { WIDGET_CODE_MAX_LENGTH, WIDGET_SPEC_MAX_LENGTH } from './validate';
 
 /**
  * Per-message storage guard, not an operator knob: it bounds how many compiled
@@ -11,31 +15,37 @@ import { WIDGET_CODE_MAX_LENGTH, WIDGET_SPEC_MAX_LENGTH } from './validate';
  */
 export const WIDGET_RESULTS_MAX_ENTRIES = 8;
 
-const WIDGET_RESULT_ENDPOINT_MAX_LENGTH = 200;
-const WIDGET_RESULT_MODEL_MAX_LENGTH = 200;
+/**
+ * How long a `pending` entry may stand before it is read as a failure. No
+ * compile can outlive the protocol's hard ceiling, so one older than this
+ * cannot still be running — it was orphaned by a process restart mid-compile,
+ * and reporting it as failed lets the user retry instead of watching a card
+ * that will never settle.
+ */
+export const WIDGET_PENDING_STALE_MS = WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS + 60_000;
+
+/** What a `pending` entry orphaned by a restart reads as. */
+const WIDGET_ORPHANED_COMPILE_ERROR =
+  'The compilation did not finish. Generate the card again to retry.';
+
+/** The only path that writes the array, so an entry that settles late still has
+ *  a context naming the request that started it. */
+const WIDGET_STORE_CONTEXT = 'POST /api/widgets/generate';
 
 export type WidgetResultRequest = ServerRequest & { params: { messageId: string } };
 
 export type WidgetResultHandler = (req: WidgetResultRequest, res: Response) => Promise<void>;
 
-export type WidgetResultParse = { ok: true; value: TStoredWidget } | { ok: false };
-
-interface WidgetResultBody {
-  spec?: unknown;
-  endpoint?: unknown;
-  model?: unknown;
-  code?: unknown;
-}
-
 /** The message fields these routes read; every other field is left to `saveMessage`. */
-interface StoredWidgetMessage {
+export interface StoredWidgetMessage {
   conversationId: string;
   isTemporary?: boolean;
   expiredAt?: Date | null;
   widgets?: TStoredWidget[];
 }
 
-interface OwnedMessage {
+/** A message the caller has proved belongs to the requesting user. */
+export interface OwnedMessage {
   userId: string;
   message: StoredWidgetMessage;
 }
@@ -47,48 +57,19 @@ export interface WidgetResultDbMethods {
 
 export interface WidgetResultDeps {
   db: WidgetResultDbMethods;
-  /** The route's subagent guard; it answers the request itself when the thread is read-only. */
-  rejectSubagentWrite: (
-    req: WidgetResultRequest,
-    res: Response,
-    conversationId: string,
-  ) => Promise<boolean>;
 }
 
 export interface WidgetResultHandlers {
   read: WidgetResultHandler;
-  write: WidgetResultHandler;
 }
 
-/**
- * Refuses a blank field or one past the bound; the value itself is kept
- * verbatim, so the entry the client stored comes back identical.
- */
-function boundedString(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.length > maxLength) {
-    return undefined;
-  }
-  return value;
-}
-
-/**
- * Accepts only a body that already carries all four fields. The stored entry is
- * what the compile call produced, so a partial or oversized body is refused
- * rather than repaired.
- */
-export function parseWidgetResult(raw: unknown): WidgetResultParse {
-  if (raw == null || typeof raw !== 'object') {
-    return { ok: false };
-  }
-  const body = raw as WidgetResultBody;
-  const spec = boundedString(body.spec, WIDGET_SPEC_MAX_LENGTH);
-  const endpoint = boundedString(body.endpoint, WIDGET_RESULT_ENDPOINT_MAX_LENGTH);
-  const model = boundedString(body.model, WIDGET_RESULT_MODEL_MAX_LENGTH);
-  const code = boundedString(body.code, WIDGET_CODE_MAX_LENGTH);
-  if (spec == null || endpoint == null || model == null || code == null) {
-    return { ok: false };
-  }
-  return { ok: true, value: { spec, endpoint, model, code } };
+export interface StoreWidgetEntryParams {
+  db: WidgetResultDbMethods;
+  req: ServerRequest;
+  userId: string;
+  messageId: string;
+  message: StoredWidgetMessage;
+  entry: TStoredWidget;
 }
 
 /** Same entry when compiled from the same spec on the same endpoint and model. */
@@ -111,17 +92,56 @@ export function upsertWidgetResult(
   return [...kept, entry].slice(-WIDGET_RESULTS_MAX_ENTRIES);
 }
 
-async function loadOwnedMessage(
-  req: WidgetResultRequest,
+/**
+ * Derives the entry a reader should see from the one that was stored. An entry
+ * written before the compile became asynchronous carries its compiled code and
+ * no status, so it is a finished compile; a `pending` entry that outlived the
+ * protocol ceiling was orphaned by a restart and is reported as a failure the
+ * user can retry. Everything else is already what it claims to be.
+ */
+export function normalizeStoredWidget(entry: TStoredWidget): TStoredWidget {
+  const status: TWidgetCompileStatus | undefined = entry.status;
+  if (status == null) {
+    return { ...entry, status: 'ready', startedAt: 0 };
+  }
+  if (status !== 'pending') {
+    return entry;
+  }
+  /** An unreadable start time leaves the entry no age at all, so it is treated
+   *  as orphaned rather than left pending forever. */
+  const elapsedMs = Date.now() - entry.startedAt;
+  if (Number.isFinite(elapsedMs) && elapsedMs <= WIDGET_PENDING_STALE_MS) {
+    return entry;
+  }
+  return {
+    ...entry,
+    status: 'failed',
+    code: undefined,
+    error: WIDGET_ORPHANED_COMPILE_ERROR,
+  };
+}
+
+export function normalizeStoredWidgets(widgets: readonly TStoredWidget[]): TStoredWidget[] {
+  return widgets.map(normalizeStoredWidget);
+}
+
+/**
+ * Loads a message the requesting user owns, answering the request itself when
+ * it does not. The message id is a parameter rather than a route parameter
+ * because the compile request carries it in the body.
+ */
+export async function loadOwnedMessage(
+  req: ServerRequest,
   res: Response,
   db: WidgetResultDbMethods,
+  messageId: string,
 ): Promise<OwnedMessage | undefined> {
   const userId = req.user?.id;
   if (userId == null) {
     res.status(401).json({ error: 'Authentication required' });
     return undefined;
   }
-  const message = await db.getMessage({ user: userId, messageId: req.params.messageId });
+  const message = await db.getMessage({ user: userId, messageId });
   if (message == null) {
     res.status(404).json({ error: 'Message not found' });
     return undefined;
@@ -129,17 +149,52 @@ async function loadOwnedMessage(
   return { userId, message };
 }
 
-export function createWidgetResultHandlers({
+/**
+ * The single place the `widgets` array is written. Existing entries are
+ * normalized first, so rewriting the array upgrades a legacy entry instead of
+ * persisting it in the shape that predates the status field.
+ */
+export async function storeWidgetEntry({
   db,
-  rejectSubagentWrite,
-}: WidgetResultDeps): WidgetResultHandlers {
+  req,
+  userId,
+  messageId,
+  message,
+  entry,
+}: StoreWidgetEntryParams): Promise<boolean> {
+  const widgets = upsertWidgetResult(normalizeStoredWidgets(message.widgets ?? []), entry);
+  const saved = await db.saveMessage(
+    {
+      userId,
+      isTemporary: message.isTemporary,
+      expiredAt: message.expiredAt ?? undefined,
+      interfaceConfig: req.config?.interfaceConfig,
+    },
+    {
+      messageId,
+      conversationId: message.conversationId,
+      user: userId,
+      widgets,
+    },
+    { context: WIDGET_STORE_CONTEXT },
+  );
+  if (saved == null) {
+    logger.warn(`[widgets] Message ${messageId} was not stored`);
+    return false;
+  }
+  return true;
+}
+
+export function createWidgetResultHandlers({ db }: WidgetResultDeps): WidgetResultHandlers {
   const read: WidgetResultHandler = async (req, res) => {
     try {
-      const owned = await loadOwnedMessage(req, res, db);
+      const owned = await loadOwnedMessage(req, res, db, req.params.messageId);
       if (owned == null) {
         return;
       }
-      const body: TWidgetResultsResponse = { widgets: owned.message.widgets ?? [] };
+      const body: TWidgetResultsResponse = {
+        widgets: normalizeStoredWidgets(owned.message.widgets ?? []),
+      };
       res.status(200).json(body);
     } catch (error) {
       logger.error('[widgets] Failed to read stored widget results', error);
@@ -147,49 +202,5 @@ export function createWidgetResultHandlers({
     }
   };
 
-  const write: WidgetResultHandler = async (req, res) => {
-    try {
-      const parsed = parseWidgetResult(req.body);
-      if (!parsed.ok) {
-        res.status(400).json({ error: 'Invalid widget result' });
-        return;
-      }
-      const owned = await loadOwnedMessage(req, res, db);
-      if (owned == null) {
-        return;
-      }
-      const { userId, message } = owned;
-      if (await rejectSubagentWrite(req, res, message.conversationId)) {
-        return;
-      }
-      const widgets = upsertWidgetResult(message.widgets ?? [], parsed.value);
-      const saved = await db.saveMessage(
-        {
-          userId,
-          isTemporary: message.isTemporary,
-          expiredAt: message.expiredAt ?? undefined,
-          interfaceConfig: req.config?.interfaceConfig,
-        },
-        {
-          messageId: req.params.messageId,
-          conversationId: message.conversationId,
-          user: userId,
-          widgets,
-        },
-        { context: 'POST /api/messages/widgets/:messageId' },
-      );
-      if (saved == null) {
-        logger.warn(`[widgets] Message ${req.params.messageId} was not stored`);
-        res.status(500).json({ error: 'Failed to store widget result' });
-        return;
-      }
-      const body: TWidgetResultsResponse = { widgets };
-      res.status(200).json(body);
-    } catch (error) {
-      logger.error('[widgets] Failed to store widget result', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  };
-
-  return { read, write };
+  return { read };
 }

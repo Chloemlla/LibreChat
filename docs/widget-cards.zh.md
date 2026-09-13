@@ -10,7 +10,7 @@
 
 **1. 协议层（提示词预注入）。** 每一轮 agent 调用都携带一段指令，告诉模型标签格式、JSON 结构，以及什么情况下值得发一张卡片。该指令在 `packages/api/src/agents/initialize.ts` 中追加到 agent 的 `additional_instructions`，就放在既有 artifacts 指令旁边，因此对每个 endpoint、每个运行时 agent 都生效。功能关闭时它是 `null`，所以关掉的部署不会发送任何东西。
 
-**2. 渲染层（编译 + 沙盒）。** 客户端的 markdown 管线识别这个标签，向 `POST /api/widgets/generate` 发一次请求，把规格说明编译成单文件 React 组件，再把该组件挂载进一个沙盒 iframe。模型写出的任何内容都不会在应用自身的文档里被求值。
+**2. 渲染层（编译 + 沙盒）。** 客户端的 markdown 管线识别这个标签，向 `POST /api/widgets/generate` 发一次请求启动编译 —— 把规格说明编译成单文件 React 组件 —— 再轮询消息上存着的结果直到这次编译落定，然后把该组件挂载进一个沙盒 iframe。模型写出的任何内容都不会在应用自身的文档里被求值。
 
 ## 报文格式（Wire format）
 
@@ -50,14 +50,44 @@ interface:
 - **用 `messageUserLimiter`，不是 `promptUsageLimiter`。** 后者是 prompts CRUD 的限流桶；一次编译属于模型调用，应计入 chat 路径使用的同一个按用户预算（`api/server/routes/agents/index.js:1160,1164`），这样失控的卡片与失控的对话消耗同样的配额，并走同一条 `MESSAGE_LIMIT` 违规处理路径。
 - **用 `validateModel.json`，不是 `validateModel`。** chat 用的那个守卫经 `handleError`（`packages/api/src/utils/events.ts`）拒绝，而它写的是一个 SSE 帧、状态码停在 200 —— 这种「拒绝」在 JSON 客户端眼里是一次成功。`.json` 变体执行同一条规则，但返回状态码加一个 `error` 体。两者都建立在 `checkModelAccess`（`packages/api/src/endpoints/access.ts`）之上，所以两种响应形态不会各自漂移。
 
+请求里带上卡片所在的那条消息，响应里带回这条消息已存的结果记录 —— 其中就有本次编译刚写下的那条，状态为 `pending`：
+
 ```jsonc
 // 请求
-{ "spec": "<widgetSpec.prompt 的文本>", "endpoint": "openAI", "model": "gpt-4o-mini" }
-// 响应
-{ "code": "function Widget() { … }" }
+{
+  "messageId": "<承载标签的那条消息>",
+  "spec": "<widgetSpec.prompt 的文本>",
+  "endpoint": "openAI",
+  "model": "gpt-4o-mini"
+}
+// 响应 —— 202，在编译开始之前就已作答
+{
+  "widgets": [
+    { "spec": "…", "endpoint": "openAI", "model": "gpt-4o-mini", "status": "pending", "startedAt": 1757692800000 }
+  ]
+}
 ```
 
-`endpoint` / `model` 由用户在卡片上选择，因此这次调用必须按 chat 路径同一套模型访问规则做授权。编译出的组件是单个函数体 —— 无 import、无网络访问 —— 以字符串返回；服务端不执行任何东西。
+`endpoint` / `model` 由用户在卡片上选择，因此这次调用必须按 chat 路径同一套模型访问规则做授权。编译出的组件是单个函数体 —— 无 import、无网络访问 —— 编译尘埃落定后才写进结果记录的 `code`，依然是服务端不执行任何东西的一个字符串。
+
+### 编译不留在请求里等
+
+一次编译就是**一次非流式**模型调用，而非流式端点在整个调用结束之前不会往 socket 上写一个字节：调用持续多久 —— 这套机制所服务的部署里大约 107 秒 —— 连接上就多久没有任何数据流过。反向代理会把这段沉默判成上游挂死，而 nginx 的 `proxy_read_timeout` 默认值是 60 秒，于是请求在应用自己的预算还远远没用完的时候就被 `504` 结束了。所以编译根本不该待在请求里面。
+
+端点只做「必须在作答之前发生」的事，顺序如下：
+
+1. **校验与授权。** 就是上面那条中间件链，没有变化。
+2. **取出消息并写下结果记录。** 请求里的 `messageId` 指名承载标签的那条消息；handler 用 `getMessage({ user, messageId })` 把它取出来 —— 同一次读取既确认了消息归属，也就完成了这次写入的授权 —— 为该 `(spec, endpoint, model)` 写入一条 `status: 'pending'` 的记录，存进消息的 `widgets` 子文档。
+3. **以 `202` 返回 `{ widgets }`**，即这条消息当前存着的结果记录，刚写下的那条就在其中。
+4. **把那一次编译作为分离的后台任务启动**，且必须等响应已经上线之后才启动，这样无论编译跑多久客户端都不会被挡住。该任务就地更新同一条记录：`ready` 并带上校验通过的 `code`，或 `failed` 并带上 `error`。它**永远不会 reject** —— provider 报错、超时、组件体被校验拒绝，三种结局都是落定的记录，不会留下无人处理的拒绝。
+
+客户端在记录仍是 `pending` 期间轮询 `GET /api/messages/widgets/:messageId`，一旦落定就停止，所以在编译途中的刷新会接着显示加载态，而不是把卡片丢掉。
+
+有三个后果值得点明：
+
+- **重复编译浪费的是一次调用，不是把记录写坏。** 同一个规格、同一个 endpoint 与 model 上的两次启动请求都会真的跑起来，而它们落定的是同一条按 `(spec, endpoint, model)` 定位的记录 —— 写同一个键是**替换**那条记录，不是再追加一条，所以存下来的记录始终自洽，后落定的那次为准。正常情况下卡片也发不出第二次：编译在途时重新生成控件是禁用的。
+- **落定之前会重新读一次消息。** 请求手里的那份消息是编译开始之前读的，而编译随后跑了好几分钟 —— 直接写回那份副本，就会丢掉这中间的任何一次写入，其中包括同一条消息上另一张卡片正好编译完成的那次。所以任务是等编译结束后重新读一遍消息，再往读到的内容里 upsert。
+- **编译预算是安全网，不再是跟代理赛跑的截止线。** 调用仍由 `interface.widgetCompileTimeoutMs` 兜底（默认 120000 毫秒，上限 5 分钟），但它的职责变成了接住挂死的 provider：响应不再等它，它身后也没有代理超时。超出预算的编译以 `failed` 落定。
 
 ### 授权
 
@@ -102,19 +132,23 @@ const code = extractText(response?.content);
 - **`db` 是那个只含两个方法的 endpoint 接口**，不是整个 models 模块 —— `getUserKey` / `getUserKeyValues` 正是「用户自带 API key」能工作的原因。缺了它们，凡是运维没有在服务端配好凭据的 endpoint，编译都会失败。
 - **`resolveConfigHeaders` 在构造之前执行。** 依赖会话或用户元数据做代理鉴权的代理，在编译调用上同样需要这些头；否则这次调用在代理侧就是未鉴权的。它还会恢复 Anthropic 的 `clientOptions` 载体，那里装着保护用户自带 base URL 的 SSRF 安全 `fetchOptions` —— 丢掉它会重新打开 endpoint 校验本来要堵上的重定向与 DNS-rebind 路径。
 - **`getProviderConfig` 读的是传进来的 `appConfig`，不是单例。** 模块从 `req.config` 取值，所以 handler 在测试里可以直接构造。
-- **超时信号。** 调用由 `AbortSignal.timeout(...)` 兜底，provider 挂死时表现为一张报错的卡片，而不是一个永不返回的请求。
+- **超时信号。** 调用由 `AbortSignal.timeout(...)` 兜底，provider 挂死时把记录落定为 `failed`，而不是让卡片永远停在加载态。
 
 因为 endpoint 是**用户**的选择而非 agent 的，这里的 provider 可以和产出规格的那个 agent 不同 —— 这正是要点：便宜模型写规格，用户决定用哪个模型编译。
 
 ### 编译结果随消息落库
 
-卡片是 markdown 组件，本地状态随卸载一并消失，而消息每次重渲染都会重新挂载它 —— 刷新页面就等于丢掉刚编译好的卡片。所以编译成功后客户端把结果存回**产出这条标签的那条消息**（`POST /api/messages/widgets/:messageId`），卡片再按 `messageId` 读回来（同路径的 `GET`）。
+卡片是 markdown 组件，本地状态随卸载一并消失，而消息每次重渲染都会重新挂载它 —— 刷新页面就等于丢掉刚编译好的卡片。所以结果记录存在**产出这条标签的那条消息**上，编译请求里的 `messageId` 指的就是它：请求作答之前记录就已写下，卡片再按 `messageId` 通过那个 `GET` 读回来。正因为记录是先落成 `pending`、再就地落定的，一次在途的编译本身也在记录里，编译途中的刷新会接着显示加载态，而不会把卡片丢掉。
 
-- **存的是四元组。** 每条记录为 `{ spec, endpoint, model, code }`：spec 决定它属于哪张卡片，endpoint/model 是还原用户选择所必需的，code 是编译产物本身。追加时最旧在前；同一条 `(spec, endpoint, model)` 重编译会**替换**并移到末尾，所以末尾那条永远是用户最近一次的选择。超过 8 条从头部淘汰。
+- **一条记录承载全部状态。** 每条记录为 `{ spec, endpoint, model, status, code?, error?, startedAt }`：spec 决定它属于哪张卡片，endpoint/model 是还原用户选择所必需的，`status` 取 `'pending' | 'ready' | 'failed'`，`code` 恰在编译为 `ready` 时存在、`error` 恰在为 `failed` 时存在，`startedAt` 是记录写下的时刻，单位是 epoch 毫秒。追加时最旧在前；同一个 `(spec, endpoint, model)` 再写一次会**替换**那条记录并移到末尾，所以末尾那条永远是用户最近一次的选择。超过 8 条从头部淘汰。
+- **服务端是唯一的写者。** 原先挂在这条路径上的 `POST`、它的 data-service 调用与 mutation hook 都已移除，只剩那个 `GET`。留着一个不再使用的第二写者并不可行：它一旦与后台任务抢写，就可能拿一条过时的记录盖掉更新的 `pending`，于是存下来的记录描述的是一次并不在跑的编译。
+- **`pending` 不会永远 pending。** 协议把任何一次编译上限定为 5 分钟（`WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS`），所以一条超过这个天花板、再宽限一分钟仍是 `pending` 的记录不可能是还在跑 —— 它是进程在编译中途重启留下的孤儿。读路径把它推导为 `failed`，卡片据此渲染成可重试的错误。不需要任何清扫或修复：同一条 `(spec, endpoint, model)` 的下一次编译会替换掉它。
+- **本次改动之前写下的记录读出来就是编译完成的。** 状态字段是随异步编译一起来的，所以更早的记录只有 `{ spec, endpoint, model, code }`。读路径把缺失的 `status` 归一为 `ready` —— 一条带着 code、又没有状态字段的记录，只可能出自一次已经跑完的编译。
 - **卡片与消息只共享 id。** 卡片从 `MessageContext` 取 `messageId` 自己去读，而不是把整个消息对象穿过 `MessageRenderer`、`ContentParts` 与分享路径层层传下来。
-- **还原只做一次，且不与用户抢。** 挂载时若消息上已有记录，卡片采纳末尾那条的 endpoint/model 并直接挂载它的 code；用户已经动过选择器就不再还原，重新取数也不会让它重来一遍。
-- **落库失败不改变卡片。** 写失败只意味着刷新后要重新编译一次：卡片照常挂载，不报错，也不显示重试。
-- 授权与改动路径沿用 artifact 路由：`getMessage({ user, messageId })` 确认归属，只读线程由同一个 subagent 守卫拒绝，写入走 `saveMessage`。字段也随消息导出 —— `CLIENT_MESSAGE_SELECT` 是排除式投影，因此加进去的字段默认就在用户的导出里。
+- **还原只做一次，且不与用户抢。** 消息上已有落定的记录时，卡片采纳末尾那条的 endpoint/model 并直接挂载它的 code；用户已经动过选择器就不再还原，重新取数也不会让它重来一遍。
+- **读不到就当作没有。** 消息的结果记录读不出来时，卡片按「消息上没有记录」处理，需要时自行编译；一条没送到的记录最多多花一次编译，绝不会变成错误态。
+- **写失败不会把卡片晾住。** `pending` 记录写不下去时，请求在任何编译启动之前就以错误结束，因此没有任何模型调用被计费。而**落定**那一次写失败时，已经没有人等着应答了：它只被记进日志，记录停在 `pending`，由上面的过期规则把它变成可重试的失败。
+- 授权与写入路径沿用 artifact 路由：`getMessage({ user, messageId })` 确认归属，只读线程由同一个 subagent 守卫拒绝，记录通过 `saveMessage` 写入。字段也随消息导出 —— `CLIENT_MESSAGE_SELECT` 是排除式投影，因此加进去的字段默认就在用户的导出里。
 - GeoGebra 图卡不需要这一层：它的命令本来就在消息正文里，重渲染时从标签重新解析即可。
 
 ## 沙盒
@@ -236,10 +270,11 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 |---|---|
 | `packages/api/src/prompts/widgets/index.ts` | 协议指令 + 代码生成系统提示词 |
 | `packages/api/src/widgets/generate.ts` | 单次非流式模型调用 |
+| `packages/api/src/widgets/job.ts` | 分离的后台编译任务与它的两条落定路径 |
 | `packages/api/src/widgets/validate.ts` | 对返回代码的边界与合理性校验 |
-| `packages/api/src/widgets/results.ts` | 编译结果的解析、去重追加与上限 |
-| `packages/api/src/widgets/results.spec.ts` | 上述解析、追加与两个 handler 的测试 |
-| `packages/api/src/widgets/controller.ts` | 请求 handler |
+| `packages/api/src/widgets/results.ts` | 结果记录的解析、追加去重与上限；读 handler，以及过期推导与旧记录归一 |
+| `packages/api/src/widgets/results.spec.ts` | 上述解析、追加与结果 handler 的测试 |
+| `packages/api/src/widgets/controller.ts` | 请求 handler：写下 `pending` 记录、作答 `202`、启动后台任务 |
 | `packages/api/src/endpoints/access.ts` | 两个守卫共用的模型访问规则 |
 | `api/server/routes/widgets.js` | 路由接线（鉴权、限流） |
 | `client/src/components/Widgets/plugin.ts` | remark 插件：标签 → 节点 |
@@ -260,19 +295,19 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 | `packages/api/src/prompts/widgets/index.ts` | GeoGebra 指令构造器 |
 | `packages/data-provider/src/config.ts` | `interface.widgets` schema 字段 + 默认值；`interface.geogebraOrigin`，可选且无默认值 |
 | `packages/data-schemas/src/schema/message.ts`、`src/types/message.ts` | 消息上的 `widgets` 子文档与 `IMessage.widgets` |
-| `api/server/routes/messages.js` | `GET`/`POST` `/api/messages/widgets/:messageId`，注册在参数化 GET 之前 |
+| `api/server/routes/messages.js` | `GET /api/messages/widgets/:messageId`，注册在参数化 GET 之前；结果路径上的 `POST` 已移除 |
 | `packages/data-schemas/src/app/interface.ts` | 把 `widgets` 与 `geogebraOrigin` 拷进加载后的 interface 配置 |
-| `packages/data-provider/src/api-endpoints.ts`、`data-service.ts`、`keys.ts` | 编译与结果两组 endpoint、调用方、query/mutation key |
-| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse`；`TStoredWidget` / `TWidgetResultsResponse` |
-| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`；`useGetWidgetResultsQuery` 与 `useSaveWidgetResultMutation` |
+| `packages/data-provider/src/api-endpoints.ts`、`data-service.ts`、`keys.ts` | 编译端点与结果 `GET` 及其调用方与 key；回存路径已移除 |
+| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest`；`TWidgetCompileStatus`；`TStoredWidget` / `TWidgetResultsResponse`；`TWidgetGenerateResponse` |
+| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`；`useGetWidgetResultsQuery`，记录为 `pending` 期间由卡片传入轮询间隔；回存 mutation 已移除 |
 | `api/server/routes/index.js`、`api/server/index.js` | 注册并挂载路由 |
 | `api/server/middleware/validateModel.js` | 两个守卫改为建立在共用规则之上，并导出 JSON 形态 |
 | `client/src/components/Chat/Messages/Content/markdownConfig.ts` | 注册两套插件与两个组件 |
 | `client/src/components/Widgets/index.ts` | 把图卡组件与 widget 组件一起导出 |
-| `client/src/components/Widgets/GenerateWidget.tsx` | 读回本消息的编译结果、编译成功后回存、按末尾记录还原 endpoint 与 model |
+| `client/src/components/Widgets/GenerateWidget.tsx` | 记录为 `pending` 期间轮询本消息的结果，并按末尾记录还原 endpoint 与 model；不再回存结果 |
 | `client/vite.config.ts` | 把 `widget-runtime.html`、`ggb-runtime.html` 与 `geogebra/` 复制进 `dist/` |
 | `client/src/locales/en/translation.json` | 卡片文案 |
-| `librechat.example.yaml` | 记录该键 |
+| `librechat.example.yaml` | 记录 `interface` 下的各键，含编译预算 |
 
 ## 非目标
 
@@ -282,6 +317,6 @@ applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CS
 
 ## 验证
 
-- 后端：指令构造器的单元测试（widget 开/关；GeoGebra 配置了 origin 与没配两种情况）、代码校验器、共用的模型访问规则、handler 的授权与错误路径、结果记录的解析/去重追加/上限以及两个结果 handler 的授权与错误路径。
-- 前端：一条携带完整标签的消息、一个仍在流式输出中的标签、一个 JSON 体损坏的标签，各自的渲染测试；消息协议 reducer 的单元测试；以及卡片在消息已带结果时直接挂载、还原选择、编译后回存，和写失败不打断卡片这几条。
-- 本仓以 CI 为唯一的构建与测试权威；本地不做任何构建。CI 覆盖编译、类型与单测，**覆盖不到浏览器里的实际渲染** —— 「刷新后卡片仍在」这类端到端行为需要在部署后人工确认一次。
+- 后端：指令构造器的单元测试（widget 开/关；GeoGebra 配置了 origin 与没配两种情况）、代码校验器、共用的模型访问规则、handler 的授权与错误路径。围绕编译生命周期的测试覆盖这台状态机：响应之前先写下的 `pending` 记录、两条落定路径（`ready` 带 `code`、`failed` 带 `error`）、把超龄 `pending` 读成 `failed` 的过期推导、把旧记录读成 `ready` 的归一，以及结果记录的解析、追加去重与上限。
+- 前端：一条携带完整标签的消息、一个仍在流式输出中的标签、一个 JSON 体损坏的标签，各自的渲染测试；消息协议 reducer 的单元测试；以及卡片在消息已带落定记录时直接挂载、记录为 `pending` 期间轮询、还原选择，和把 `failed` 记录渲染成可重试错误这几条。
+- 本仓以 CI 为唯一的构建与测试权威；本地不做任何构建。CI 覆盖编译、类型与单测，**覆盖不到浏览器里的实际渲染** —— 「刷新后卡片仍在」「编译途中刷新会接着显示加载态」这类端到端行为需要在部署后人工确认一次。

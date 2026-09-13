@@ -264,9 +264,13 @@ interface:
   # e.g. https://ggb.example.com (http://localhost:3099 is accepted for local development).
   # geogebraOrigin: 'https://ggb.example.com'
   # Budget for one widget compile call, in milliseconds (default: 120000).
-  # A compile that outlives it is aborted and the card renders an error, so raise it when a model
-  # legitimately needs longer to write a component. It is a whole number of milliseconds between
-  # 1 and 300000 (5 minutes); a value outside that range fails config validation and stops startup.
+  # The compile runs as a detached background job, after the request that started it has already
+  # been answered, so this bounds the model call itself: a safety net for a provider that stops
+  # responding, not the lifetime of an HTTP request and not a deadline any reverse proxy shares.
+  # A compile that outlives it settles as failed and the card renders a retryable error, so raise
+  # it when a model legitimately needs longer to write a component. It is a whole number of
+  # milliseconds between 1 and 300000 (5 minutes); a value outside that range fails config
+  # validation and stops startup.
   # widgetCompileTimeoutMs: 120000
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true

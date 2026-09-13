@@ -9,6 +9,8 @@ let mockEndpoints: Record<string, { userProvide: boolean }> | undefined;
 let mockModels: Record<string, string[]> | undefined;
 let mockStartupConfig: { interface?: { widgets?: boolean } } | undefined;
 let mockWidgets: TStoredWidget[] | undefined;
+let mockResultsConfig: { refetchInterval?: number | false } | undefined;
+let mockRefetch: jest.Mock;
 
 jest.mock('~/data-provider', () => {
   const actual = jest.requireActual<Record<string, unknown>>('~/data-provider');
@@ -27,7 +29,15 @@ jest.mock('librechat-data-provider/react-query', () => {
     ...actualModule,
     useGetModelsQuery: () => ({ data: mockModels }),
     useGenerateWidgetMutation: () => ({ mutate: mockMutate }),
-    useGetWidgetResultsQuery: () => ({ data: mockWidgets ? { widgets: mockWidgets } : undefined }),
+    useGetWidgetResultsQuery: (
+      _messageId: string,
+      config: { refetchInterval?: number | false },
+    ) => {
+      mockResultsConfig = config;
+      return { data: mockWidgets ? { widgets: mockWidgets } : undefined, refetch: mockRefetch };
+    },
+    /* The server writes the message's widget array now, so the card has no write hook to
+       call; the stub stays so a regression reaches an assertion instead of `undefined`. */
     useSaveWidgetResultMutation: () => ({ mutate: mockSaveMutate }),
   };
 });
@@ -39,6 +49,8 @@ const COMPILED_CODE = 'function Widget() { return null; }';
 const STORED_CODE = 'function Stored() { return null; }';
 const PROMPT = 'plot the series';
 const CHOOSE_MODEL = 'Choose an endpoint and model to compile this card.';
+const COMPILE_FAILED = 'the compiler ran out of time';
+const POLL_INTERVAL_MS = 2500;
 
 const heightAttribute = (height?: string): string =>
   height === undefined ? '' : ` height="${height}"`;
@@ -49,45 +61,45 @@ const tag = (body: string, height?: string): string =>
 const specBody = (prompt = PROMPT): string => JSON.stringify({ widgetSpec: { prompt } });
 
 type MutationOptions = {
-  onSuccess: (data: { code: string }) => void;
+  onSuccess: () => void;
   onError: (error: unknown) => void;
-  onSettled: () => void;
 };
 
-/* React Query always settles a mutation, and the card's pending state is cleared there
-   rather than in the success and error handlers, so a stub that stops after `onSuccess`
-   or `onError` leaves the card stuck on its loading branch. */
+/* The card's pending marker is cleared when the entry it names settles, not when the
+   request is answered, so a stub has to leave the entry behind as well as calling the
+   handler: the response on its own is not what ends the card's loading state. */
 const resolveWith = (code: string) => {
   mockMutate.mockImplementation((_payload: unknown, options: MutationOptions) => {
-    options.onSuccess({ code });
-    options.onSettled();
+    mockWidgets = [storedWidget({ code })];
+    options.onSuccess();
   });
 };
 
 const rejectWith = (error: Error) => {
   mockMutate.mockImplementation((_payload: unknown, options: MutationOptions) => {
     options.onError(error);
-    options.onSettled();
   });
 };
 
+/* What the accepted request leaves behind: the server answers as soon as the entry is
+   recorded, and the card keeps asking the message for the outcome. */
+const respondPending = () => {
+  mockMutate.mockImplementation((_payload: unknown, options: MutationOptions) => {
+    mockWidgets = [storedWidget({ status: 'pending', code: undefined })];
+    options.onSuccess();
+  });
+};
+
+/** A stored entry as the server leaves it, so the default is a finished compile. */
 const storedWidget = (overrides: Partial<TStoredWidget> = {}): TStoredWidget => ({
   spec: PROMPT,
   endpoint: 'openAI',
   model: 'gpt-4o-mini',
+  status: 'ready',
   code: STORED_CODE,
+  startedAt: 0,
   ...overrides,
 });
-
-type SaveOptions = { onError?: (error: Error) => void };
-
-/** React Query reports a rejected save through handlers the card never passes, so a
- *  failed write reaches the component as nothing at all. */
-const failSave = (error = new Error('offline')) => {
-  mockSaveMutate.mockImplementation((_payload: unknown, options?: SaveOptions) =>
-    options?.onError?.(error),
-  );
-};
 
 /* `render` from `test/layout-test-utils` already supplies the router, so a second one
    here would be nested inside it. */
@@ -118,6 +130,8 @@ const selectModel = () => {
 beforeEach(() => {
   mockMutate.mockReset();
   mockSaveMutate.mockReset();
+  mockRefetch = jest.fn();
+  mockResultsConfig = undefined;
   frameWindow.postMessage.mockClear();
   mockEndpoints = { openAI: { userProvide: false } };
   mockModels = { openAI: ['gpt-4o-mini'] };
@@ -194,7 +208,12 @@ describe('compiling a card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate card' }));
 
     expect(mockMutate).toHaveBeenCalledWith(
-      { spec: PROMPT, endpoint: 'openAI', model: 'gpt-4o-mini' },
+      {
+        messageId: 'm1',
+        spec: PROMPT,
+        endpoint: 'openAI',
+        model: 'gpt-4o-mini',
+      },
       expect.anything(),
     );
 
@@ -202,6 +221,39 @@ describe('compiling a card', () => {
     expect(frame.tagName).toBe('IFRAME');
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
     expect(frame).toHaveAttribute('src', '/widget-runtime.html');
+  });
+
+  /* The accepted request is answered in milliseconds and keeps nothing: the card stays
+     on its loading branch because the entry the server stored says the compile is still
+     running, and it is the results query that will carry the outcome back. */
+  it('shows the compile as running once the request has been accepted', () => {
+    respondPending();
+    renderMessage(`\n\n${tag(specBody(), '600px')}`);
+
+    selectModel();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate card' }));
+
+    expect(mockSaveMutate).not.toHaveBeenCalled();
+    expect(screen.getByText('Generating card')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Generate card' })).not.toBeInTheDocument();
+    expect(mockRefetch).toHaveBeenCalled();
+  });
+
+  /* The accepted request does not wait for the entry it stored to be read back, and until
+     it is read back the card has nothing else to go on. Falling through to the button in
+     that window would hide a compile that is running and leave nothing polling for it. */
+  it('keeps the compile on its loading branch while the stored entry is unread', () => {
+    mockMutate.mockImplementation((_payload: unknown, options: MutationOptions) => {
+      options.onSuccess();
+    });
+    renderMessage(`\n\n${tag(specBody(), '600px')}`);
+
+    selectModel();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate card' }));
+
+    expect(mockWidgets).toBeUndefined();
+    expect(screen.getByText('Generating card')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Generate card' })).not.toBeInTheDocument();
   });
 
   it('shows the reason with a retry when the compile fails', () => {
@@ -261,31 +313,52 @@ describe('a card whose message already carries results', () => {
     expect(screen.getByLabelText('Model')).toHaveValue('gpt-4o-mini');
   });
 
-  it('saves a freshly compiled result to the message', () => {
-    resolveWith(COMPILED_CODE);
+  /* A page reloaded mid-compile has no request of its own, so the entry the message
+     carries is the only thing that can hold the card on its loading branch. */
+  it('shows a compile the message already carries as still running', () => {
+    mockWidgets = [storedWidget({ status: 'pending', code: undefined })];
     renderMessage(`\n\n${tag(specBody(), '600px')}`);
 
-    selectModel();
-    fireEvent.click(screen.getByRole('button', { name: 'Generate card' }));
-
-    expect(mockSaveMutate).toHaveBeenCalledWith({
-      messageId: 'm1',
-      widget: { spec: PROMPT, endpoint: 'openAI', model: 'gpt-4o-mini', code: COMPILED_CODE },
-    });
+    expect(screen.getByText('Generating card')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Generate card' })).not.toBeInTheDocument();
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockResultsConfig?.refetchInterval).toBe(POLL_INTERVAL_MS);
   });
 
-  it('keeps the card working when the save fails', () => {
-    resolveWith(COMPILED_CODE);
-    failSave();
+  it('stops asking for the result once the compile settles', async () => {
+    mockWidgets = [storedWidget({ status: 'pending', code: undefined })];
     renderMessage(`\n\n${tag(specBody(), '600px')}`);
 
-    selectModel();
-    fireEvent.click(screen.getByRole('button', { name: 'Generate card' }));
+    expect(mockResultsConfig?.refetchInterval).toBe(POLL_INTERVAL_MS);
 
+    mockWidgets = [storedWidget({ code: COMPILED_CODE })];
+    await act(async () => {
+      document.documentElement.classList.add(WIDGET_DARK_CLASS);
+      await Promise.resolve();
+    });
+
+    expect(mockResultsConfig?.refetchInterval).toBe(false);
     expect(screen.getByTitle('Interactive card content')).toBeInTheDocument();
-    expect(screen.queryByText('offline')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    expect(mockMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a compile the server gave up on, with its reason and a retry', () => {
+    mockWidgets = [storedWidget({ status: 'failed', code: undefined, error: COMPILE_FAILED })];
+    renderMessage(`\n\n${tag(specBody(), '600px')}`);
+
+    expect(screen.getByText(COMPILE_FAILED)).toBeInTheDocument();
+    expect(mockResultsConfig?.refetchInterval).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      {
+        messageId: 'm1',
+        spec: PROMPT,
+        endpoint: 'openAI',
+        model: 'gpt-4o-mini',
+      },
+      expect.anything(),
+    );
   });
 
   it('asks for a choice when the message carries nothing', () => {

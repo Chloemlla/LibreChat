@@ -20,9 +20,9 @@ artifacts directive, so it reaches every endpoint and every runtime agent. It is
 feature is enabled, so a disabled deployment sends nothing.
 
 **2. Render layer (compile + sandbox).** The client's markdown pipeline recognizes the tag, calls
-`POST /api/widgets/generate` once to compile the specification into a single-file React component,
-and mounts that component inside a sandboxed iframe. Nothing the model writes is evaluated in the
-application's own document.
+`POST /api/widgets/generate` once to start compiling the specification into a single-file React
+component, polls the message's stored results until that compile settles, and mounts the component
+inside a sandboxed iframe. Nothing the model writes is evaluated in the application's own document.
 
 ## Wire format
 
@@ -75,16 +75,75 @@ The middleware chain is `requireJwtAuth` → `messageUserLimiter` → `configMid
 - **`messageUserLimiter`, not `promptUsageLimiter`.** The latter is the prompts CRUD bucket; a compile is a model call and belongs in the same per-user budget the chat path uses (`api/server/routes/agents/index.js:1160,1164`), so a runaway card costs the same quota as a runaway turn and is denied through the same `MESSAGE_LIMIT` violation path.
 - **`validateModel.json`, not `validateModel`.** The chat guard refuses through `handleError` (`packages/api/src/utils/events.ts`), which writes an SSE frame and leaves the status at 200 — a rejection a JSON client reads as a success. The `.json` variant applies the same rule and answers with a status and an `error` body. Both are built on `checkModelAccess` (`packages/api/src/endpoints/access.ts`), so the two shapes cannot drift apart.
 
+The request names the message the card sits on, and the answer carries that message's stored
+results — the entry for this compile among them, already written as `pending`:
+
 ```jsonc
 // request
-{ "spec": "<the widgetSpec.prompt text>", "endpoint": "openAI", "model": "gpt-4o-mini" }
-// response
-{ "code": "function Widget() { … }" }
+{
+  "messageId": "<the message carrying the tag>",
+  "spec": "<the widgetSpec.prompt text>",
+  "endpoint": "openAI",
+  "model": "gpt-4o-mini"
+}
+// response — 202, answered before the compile runs
+{
+  "widgets": [
+    { "spec": "…", "endpoint": "openAI", "model": "gpt-4o-mini", "status": "pending", "startedAt": 1757692800000 }
+  ]
+}
 ```
 
 The user picks `endpoint`/`model` in the card, so the call must be authorized against the same model
 access rules the chat path enforces. The compiled component is a single function body — no imports,
-no network access — and is returned as a string; nothing is executed server-side.
+no network access — and once the compile settles it is written into the entry's `code`, still a
+string that nothing executes server-side.
+
+### The compile outlives the request
+
+A compile is one **non-streaming** model call, and a non-streaming endpoint writes nothing to the
+socket until it has finished: for the whole length of the call — around 107 seconds in the
+deployment this was built for — not one byte crosses the connection. A reverse proxy reads that
+silence as a hung upstream, and nginx's default `proxy_read_timeout` is 60 seconds, so the request
+died with a `504` long before the application's own budget was anywhere near spent. The compile
+therefore does not belong inside the request at all.
+
+The endpoint does only what has to happen before it answers, in this order:
+
+1. **Validate and authorize.** The middleware chain above, unchanged.
+2. **Load the message and write the entry.** The request's `messageId` names the message carrying
+   the tag; the handler loads it with `getMessage({ user, messageId })` — the same read that
+   establishes the message is the caller's, so loading the message and authorizing the write are
+   one step — upserts an entry for this `(spec, endpoint, model)` with `status: 'pending'`, and
+   stores it on the message's `widgets` subdocument.
+3. **Answer `202` with `{ widgets }`**, the message's stored results with this fresh entry among
+   them.
+4. **Start the compile as a detached background job**, once the response is on the wire so the
+   client is unblocked no matter how long it runs. The job updates that same entry in place:
+   `ready` carrying the validated `code`, or `failed` carrying an `error`. It never rejects —
+   a provider error, a timeout, and a rejected component body are all settled entries rather than
+   an unhandled rejection.
+
+The client polls `GET /api/messages/widgets/:messageId` while an entry is `pending` and stops as
+soon as it settles, so a page refreshed mid-compile resumes the loading state instead of losing the
+card.
+
+Three consequences are worth naming:
+
+- **A duplicate compile wastes a call; it does not corrupt the record.** Two start requests for the
+  same spec on the same endpoint and model both run, and both settle the one entry keyed by
+  `(spec, endpoint, model)` — writing that key replaces the entry rather than appending a second
+  one, so the stored record stays coherent and the last settle wins. The card cannot normally issue
+  one either, since its regenerate control is disabled while a compile is in flight.
+- **A settle re-reads the message before it writes.** The request loaded its copy of the message
+  before the compile started and the compile then ran for minutes, so settling into that copy would
+  drop anything written in between — another card on the same message finishing its own compile
+  among them. The job reads the message again when the compile finishes and upserts into what it
+  finds there.
+- **The compile budget is now a safety net, not a race against a proxy.** The call is still bounded
+  by `interface.widgetCompileTimeoutMs` (default 120000 ms, ceiling five minutes), but its job is
+  now to catch a hung provider: the response no longer waits on the budget and no proxy timeout sits
+  at the end of it. A compile that outlives the budget settles as `failed`.
 
 ### Authorization
 
@@ -159,7 +218,7 @@ Five details this inherits on purpose:
 - **`getProviderConfig` reads `appConfig`, not a singleton.** The module takes it from
   `req.config`, so the handler stays constructible in a test.
 - **A timeout signal.** The call is bounded by `AbortSignal.timeout(...)`, so a hung provider
-  surfaces as a card error rather than a request that never returns.
+  settles the entry as `failed` instead of leaving the card loading forever.
 
 Because the endpoint is the *user's* choice rather than the agent's, the provider here can differ
 from the agent that produced the spec — which is the point: a cheap model writes the spec, and the
@@ -169,26 +228,52 @@ user decides which model compiles it.
 
 A card is a markdown component, so its local state goes with the unmount, and every re-render of
 the message mounts it again — a page refresh would otherwise throw away the card that was just
-compiled. So on a successful compile the client writes the result back onto **the message carrying
-the tag** (`POST /api/messages/widgets/:messageId`) and reads it back by `messageId` (the `GET` on
-the same path).
+compiled. The result therefore lives on **the message carrying the tag**, which is what the compile
+request's `messageId` names: the entry is written before the request answers, and read back by
+`messageId` through the `GET`. Because the entry is written `pending` first and settled in place, an
+in-flight compile is part of the stored record too, and a refresh while it runs resumes the loading
+state rather than dropping it.
 
-- **Four fields per entry.** Each record is `{ spec, endpoint, model, code }`: the spec decides
-  which card it belongs to, the endpoint and model are what restoring the user's choice needs, and
-  the code is the compile output itself. Entries are appended oldest-first; recompiling the same
-  `(spec, endpoint, model)` **replaces** that entry and moves it to the end, so the tail is always
-  the user's most recent choice. Past eight entries the oldest falls off the head.
+- **One entry carries the whole state.** Each record is
+  `{ spec, endpoint, model, status, code?, error?, startedAt }`: the spec decides which card it
+  belongs to, the endpoint and model are what restoring the user's choice needs, `status` is
+  `'pending' | 'ready' | 'failed'`, `code` is present exactly when the compile is `ready` and
+  `error` exactly when it is `failed`, and `startedAt` is when the entry was written, in epoch ms.
+  Entries are appended oldest-first; writing the same `(spec, endpoint, model)` again **replaces**
+  that entry and moves it to the end, so the tail is always the user's most recent choice. Past
+  eight entries the oldest falls off the head.
+- **The server is the only writer.** The `POST` that used to sit on this path, its data-service call
+  and its mutation hook are all gone; only the `GET` remains. A second writer could not simply be
+  left in place unused: a client write racing the background job could resurrect a stale entry over
+  a newer `pending` one, and the stored record would then describe a compile that is not the one
+  running.
+- **A `pending` entry cannot be pending forever.** The protocol caps any compile at five minutes
+  (`WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS`), so an entry still `pending` after that ceiling plus a
+  minute of slack cannot still be running — it was orphaned by a process restart mid-compile. The
+  read path derives it as `failed`, which the card renders as a retryable error. Nothing has to
+  sweep or repair the database: the next compile for the same `(spec, endpoint, model)` replaces
+  the entry.
+- **Entries written before this change read as already compiled.** The status fields arrived with
+  the asynchronous compile, so an older entry carries only `{ spec, endpoint, model, code }`. The
+  read path normalizes a missing `status` to `ready` — an entry with code that predates the field
+  was written by a compile that finished.
 - **The card and its message share only the id.** The card takes `messageId` from
   `MessageContext` and fetches its own results, rather than threading the whole message object
   through `MessageRenderer`, `ContentParts` and the share path.
-- **Restore happens once, and never over the user.** When the message already carries a record,
-  the card adopts the endpoint and model of the tail entry and mounts its code directly; once the
-  user has touched a selector it stops restoring, and a refetch does not make it try again.
-- **A failed write leaves the card alone.** It only means the card has to be compiled once more
-  after a refresh: the card mounts as usual, with no error and no retry.
-- Ownership and mutation follow the artifact route: `getMessage({ user, messageId })` establishes
+- **Restore happens once, and never over the user.** When the message already carries a settled
+  record, the card adopts the endpoint and model of the tail entry and mounts its code directly;
+  once the user has touched a selector it stops restoring, and a refetch does not make it try
+  again.
+- **Reading fails soft.** If the message's results cannot be read, the card behaves as though it
+  carried none and compiles on demand; a stored entry that never arrives costs one recompile, never
+  an error state.
+- **A store that fails cannot strand the card.** A `pending` entry that cannot be written ends the
+  request with an error before any compile starts, so no model call is billed for it. A *settle*
+  write that fails has nobody left to answer: it is logged, the entry stays `pending`, and the
+  staleness rule above is what turns it into a retryable failure.
+- Ownership and writes follow the artifact route: `getMessage({ user, messageId })` establishes
   the message is the caller's, a read-only thread is refused by the same subagent guard, and the
-  write goes through `saveMessage`. The field is **exported with the message** too —
+  entry goes in through `saveMessage`. The field is **exported with the message** too —
   `CLIENT_MESSAGE_SELECT` is an exclusion projection, so a field added there is in user exports by
   default.
 - GeoGebra figure cards need none of this: their commands are already in the message text and are
@@ -367,10 +452,11 @@ New:
 |---|---|
 | `packages/api/src/prompts/widgets/index.ts` | protocol directive + codegen system prompt |
 | `packages/api/src/widgets/generate.ts` | single non-streaming model call |
+| `packages/api/src/widgets/job.ts` | the detached compile and its two settle paths |
 | `packages/api/src/widgets/validate.ts` | bounds and sanity checks on the returned code |
-| `packages/api/src/widgets/results.ts` | parsing, deduplicating append and the entry cap for compiled results |
-| `packages/api/src/widgets/results.spec.ts` | specs for that parsing and append, and for both handlers |
-| `packages/api/src/widgets/controller.ts` | request handler |
+| `packages/api/src/widgets/results.ts` | entry parsing, upsert and the cap; the read handler, with the staleness and legacy normalization |
+| `packages/api/src/widgets/results.spec.ts` | specs for that parsing and append, and for the result handler |
+| `packages/api/src/widgets/controller.ts` | request handler: store the `pending` entry, answer `202`, start the job |
 | `packages/api/src/endpoints/access.ts` | the model-access rule both guards apply |
 | `api/server/routes/widgets.js` | route wiring (auth, limiter) |
 | `client/src/components/Widgets/plugin.ts` | remark plugin: tag → node |
@@ -392,18 +478,18 @@ Edited:
 | `packages/data-provider/src/config.ts` | `interface.widgets` schema field + default; `interface.geogebraOrigin`, optional and without a default |
 | `packages/data-schemas/src/app/interface.ts` | copy `widgets` and `geogebraOrigin` into the loaded interface config |
 | `packages/data-schemas/src/schema/message.ts`, `src/types/message.ts` | the `widgets` subdocument on the message and `IMessage.widgets` |
-| `api/server/routes/messages.js` | `GET`/`POST` `/api/messages/widgets/:messageId`, registered before the parameterized `GET` |
-| `packages/data-provider/src/api-endpoints.ts`, `data-service.ts`, `keys.ts` | both endpoint groups, their callers, and the query/mutation keys |
-| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse`; `TStoredWidget` / `TWidgetResultsResponse` |
-| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`; `useGetWidgetResultsQuery` and `useSaveWidgetResultMutation` |
+| `api/server/routes/messages.js` | `GET /api/messages/widgets/:messageId`, registered before the parameterized `GET`; the results `POST` is gone |
+| `packages/data-provider/src/api-endpoints.ts`, `data-service.ts`, `keys.ts` | the compile endpoint and the results `GET` with their callers and keys; the save path is gone |
+| `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest`; `TWidgetCompileStatus`; `TStoredWidget` / `TWidgetResultsResponse`; `TWidgetGenerateResponse` |
+| `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation`; `useGetWidgetResultsQuery`, which the card drives with a poll interval while an entry is `pending`; the save mutation is gone |
 | `api/server/routes/index.js`, `api/server/index.js` | register and mount the route |
 | `api/server/middleware/validateModel.js` | build both guards on the shared rule, and expose the JSON shape |
 | `client/src/components/Chat/Messages/Content/markdownConfig.ts` | register both plugins and both components |
 | `client/src/components/Widgets/index.ts` | export the figure card alongside the widget card |
-| `client/src/components/Widgets/GenerateWidget.tsx` | read this message's compiled results, store a fresh compile, restore the endpoint and model from the tail entry |
+| `client/src/components/Widgets/GenerateWidget.tsx` | poll this message's results while an entry is `pending`, and restore the endpoint and model from the tail entry; it no longer writes results |
 | `client/vite.config.ts` | copy `widget-runtime.html`, `ggb-runtime.html` and `geogebra/` into `dist/` |
 | `client/src/locales/en/translation.json` | card strings |
-| `librechat.example.yaml` | document the key |
+| `librechat.example.yaml` | document the `interface` keys, including the compile budget |
 
 ## Non-goals
 
@@ -419,14 +505,16 @@ Edited:
 ## Verification
 
 - Backend: unit specs for the directive builders (widget on/off; GeoGebra with and without an
-  origin), the code validator, the shared model-access
-  rule, and the handler's authorization and error paths; for the stored-result parsing,
-  deduplicating append and entry cap; and for the two result handlers' authorization and error
-  paths.
+  origin), the code validator, the shared model-access rule, and the handler's authorization and
+  error paths. For the compile lifecycle the specs cover the state machine: the `pending` entry
+  written before the response, both settle paths — `ready` with `code`, `failed` with `error` — the
+  staleness derivation that reads an over-age `pending` entry as `failed`, the normalization that
+  reads a legacy entry as `ready`, and the stored-result parsing, upsert and entry cap.
 - Frontend: a render test for a message carrying a complete tag, a tag still streaming, and a tag with
-  a malformed body; a unit test for the message-protocol reducer; and the card mounting a result its
-  message already carries, restoring the choice, storing a fresh compile, and surviving a failed
-  write.
+  a malformed body; a unit test for the message-protocol reducer; and the card mounting a settled
+  result its message already carries, polling while an entry is `pending`, restoring the choice,
+  and rendering a `failed` entry as retryable.
 - CI is the only build and test authority in this repository; nothing is built locally. CI covers
   compilation, types and unit tests, **not what the browser actually renders** — end-to-end
-  behavior such as "the card is still there after a refresh" needs one manual check after a deploy.
+  behavior such as "the card is still there after a refresh" and "a refresh mid-compile resumes the
+  loading state" needs one manual check after a deploy.

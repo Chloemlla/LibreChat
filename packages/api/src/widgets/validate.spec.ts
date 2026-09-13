@@ -1,5 +1,6 @@
 import {
   WIDGET_CODE_MAX_LENGTH,
+  WIDGET_MESSAGE_ID_MAX_LENGTH,
   WIDGET_SPEC_MAX_LENGTH,
   definesWidgetComponent,
   findForbiddenConstruct,
@@ -26,6 +27,7 @@ const forbiddenCases: ReadonlyArray<[string, string]> = [
 const rejections = [
   'missing_endpoint',
   'missing_model',
+  'missing_message_id',
   'spec_missing',
   'spec_empty',
   'spec_too_long',
@@ -132,8 +134,10 @@ describe('definesWidgetComponent', () => {
 
 describe('parseWidgetGenerateRequest', () => {
   const spec = '**Objective:** plot the series';
+  const MESSAGE_ID = 'message-id';
+  const request = { messageId: MESSAGE_ID, endpoint: 'openAI', model: 'gpt-4o-mini', spec };
 
-  it('requires an endpoint, a model and a specification', () => {
+  it('requires an endpoint, a model, a specification and a message', () => {
     expect(parseWidgetGenerateRequest({})).toEqual({ ok: false, rejection: 'missing_endpoint' });
     expect(parseWidgetGenerateRequest({ endpoint: 'openAI' })).toEqual({
       ok: false,
@@ -146,14 +150,30 @@ describe('parseWidgetGenerateRequest', () => {
     expect(
       parseWidgetGenerateRequest({ endpoint: 'openAI', model: 'gpt-4o-mini', spec: '  ' }),
     ).toEqual({ ok: false, rejection: 'spec_empty' });
+    expect(parseWidgetGenerateRequest({ ...request, messageId: undefined })).toEqual({
+      ok: false,
+      rejection: 'missing_message_id',
+    });
+    expect(parseWidgetGenerateRequest({ ...request, messageId: '   ' })).toEqual({
+      ok: false,
+      rejection: 'missing_message_id',
+    });
+  });
+
+  it('refuses a message id past the bound and accepts one at it', () => {
+    const atBound = 'a'.repeat(WIDGET_MESSAGE_ID_MAX_LENGTH);
+
+    expect(parseWidgetGenerateRequest({ ...request, messageId: atBound }).ok).toBe(true);
+    expect(parseWidgetGenerateRequest({ ...request, messageId: `${atBound}a` })).toEqual({
+      ok: false,
+      rejection: 'missing_message_id',
+    });
   });
 
   it('returns the parsed request for a well-formed body', () => {
-    expect(
-      parseWidgetGenerateRequest({ endpoint: 'openAI', model: 'gpt-4o-mini', spec: ` ${spec} ` }),
-    ).toEqual({
+    expect(parseWidgetGenerateRequest({ ...request, spec: ` ${spec} ` })).toEqual({
       ok: true,
-      value: { endpoint: 'openAI', model: 'gpt-4o-mini', spec },
+      value: { messageId: MESSAGE_ID, endpoint: 'openAI', model: 'gpt-4o-mini', spec },
     });
   });
 });

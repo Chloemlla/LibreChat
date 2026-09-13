@@ -653,30 +653,43 @@ export type TEndpointsConfig =
 
 export type TModelsConfig = Record<string, string[]>;
 
-/** One interactive-card compile request: the spec the model wrote, and the endpoint/model that compiles it. */
+/** One interactive-card compile request: the message the card sits on, the spec the model wrote, and the endpoint/model that compiles it. */
 export type TWidgetGenerateRequest = {
+  messageId: string;
   spec: string;
   endpoint: string;
   model: string;
 };
 
-/** The compiled single-file component body. */
-export type TWidgetGenerateResponse = {
-  code: string;
-};
+/**
+ * How far a card's compile has got. A compile outlives the request that starts
+ * it — the request answers as soon as `pending` is stored and the client polls
+ * the message's results — so the status is what the card renders from.
+ */
+export type TWidgetCompileStatus = 'pending' | 'ready' | 'failed';
 
-/** One compiled card result kept with the message that carries its tag. */
+/** One card result kept with the message that carries its tag. */
 export type TStoredWidget = {
   spec: string;
   endpoint: string;
   model: string;
-  code: string;
+  status: TWidgetCompileStatus;
+  /** The compiled single-file component body; present exactly when `status` is `ready`. */
+  code?: string;
+  /** Why the compile failed; present exactly when `status` is `failed`. */
+  error?: string;
+  /** When the entry was written, in epoch ms. A `pending` entry older than the
+   *  protocol ceiling cannot still be compiling, so it reads as failed. */
+  startedAt: number;
 };
 
-/** The compiled card results stored on one message, oldest first. */
+/** The card results stored on one message, oldest first. */
 export type TWidgetResultsResponse = {
   widgets: TStoredWidget[];
 };
+
+/** The stored results as they stand once a compile has been accepted — the entry just written is `pending`. */
+export type TWidgetGenerateResponse = TWidgetResultsResponse;
 
 /** Server-resolved context window and pricing for one model. Rates are USD per 1M tokens. */
 export type TModelTokenomics = {

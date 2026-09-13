@@ -1,13 +1,16 @@
-import type { TStoredWidget } from 'librechat-data-provider';
+import type { TStoredWidget, TWidgetResultsResponse } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { WidgetResultDbMethods, WidgetResultRequest } from './results';
+import type { StoredWidgetMessage, WidgetResultDbMethods, WidgetResultRequest } from './results';
+import type { ServerRequest } from '~/types';
 import {
   createWidgetResultHandlers,
-  parseWidgetResult,
+  normalizeStoredWidget,
+  normalizeStoredWidgets,
+  storeWidgetEntry,
   upsertWidgetResult,
+  WIDGET_PENDING_STALE_MS,
   WIDGET_RESULTS_MAX_ENTRIES,
 } from './results';
-import { WIDGET_CODE_MAX_LENGTH, WIDGET_SPEC_MAX_LENGTH } from './validate';
 
 const USER_ID = 'user-id';
 const MESSAGE_ID = 'message-id';
@@ -15,14 +18,60 @@ const CONVERSATION_ID = '9c2f1d5e-8a4b-4c6d-9e0f-1a2b3c4d5e6f';
 const SPEC = '**Objective:** plot the series';
 const CODE = 'function Widget() { return <div>ok</div>; }';
 const EXPIRY = new Date('2026-09-13T00:00:00.000Z');
-const ENTRY: TStoredWidget = { spec: SPEC, endpoint: 'openAI', model: 'gpt-4o-mini', code: CODE };
+const INTERFACE_CONFIG = { widgetCompileTimeoutMs: 90_000 };
 
-const createRequest = (body: unknown = ENTRY, authenticated = true): WidgetResultRequest => {
+/** What an orphaned compile reads as; the client shows it on the card. */
+const ORPHANED_ERROR = 'The compilation did not finish. Generate the card again to retry.';
+
+const READY: TStoredWidget = {
+  spec: SPEC,
+  endpoint: 'openAI',
+  model: 'gpt-4o-mini',
+  status: 'ready',
+  code: CODE,
+  startedAt: 0,
+};
+
+const FAILED: TStoredWidget = {
+  spec: SPEC,
+  endpoint: 'openAI',
+  model: 'gpt-4o-mini',
+  status: 'failed',
+  error: 'The widget could not be compiled',
+  startedAt: 0,
+};
+
+const pendingEntry = (startedAt: number): TStoredWidget => ({
+  spec: SPEC,
+  endpoint: 'openAI',
+  model: 'gpt-4o-mini',
+  status: 'pending',
+  startedAt,
+});
+
+/** An entry written before the compile became asynchronous: it carries its
+ *  compiled code and no status at all. */
+const LEGACY = {
+  spec: SPEC,
+  endpoint: 'openAI',
+  model: 'gpt-4o-mini',
+  code: CODE,
+} as unknown as TStoredWidget;
+
+const entryFor = (model: string): TStoredWidget => ({ ...READY, model });
+
+const createRequest = (
+  params: { messageId: string } = { messageId: MESSAGE_ID },
+  authenticated = true,
+): WidgetResultRequest => {
   const user = { id: USER_ID, role: 'USER', tenantId: 'tenant-a' };
-  const params = { messageId: MESSAGE_ID };
-  return (
-    authenticated ? { params, body, user } : { params, body }
-  ) as unknown as WidgetResultRequest;
+  return (authenticated ? { params, user } : { params }) as unknown as WidgetResultRequest;
+};
+
+const createServerRequest = (): ServerRequest => {
+  const user = { id: USER_ID, role: 'USER', tenantId: 'tenant-a' };
+  const config = { interfaceConfig: INTERFACE_CONFIG };
+  return { body: {}, config, user } as unknown as ServerRequest;
 };
 
 const createResponse = () => {
@@ -31,64 +80,104 @@ const createResponse = () => {
   return { response: { status, json } as unknown as Response, status, json };
 };
 
-const createHandlers = () => {
+const createDb = () => {
   const getMessage = jest.fn();
   const saveMessage = jest.fn();
-  const rejectSubagentWrite = jest.fn().mockResolvedValue(false);
   const db = { getMessage, saveMessage } as unknown as WidgetResultDbMethods;
-  const handlers = createWidgetResultHandlers({ db, rejectSubagentWrite });
-  return { getMessage, saveMessage, rejectSubagentWrite, handlers };
+  return { db, getMessage, saveMessage };
 };
 
-const entryFor = (model: string): TStoredWidget => ({ ...ENTRY, model });
+const createHandlers = () => {
+  const { db, getMessage, saveMessage } = createDb();
+  return { getMessage, saveMessage, handlers: createWidgetResultHandlers({ db }) };
+};
 
-const invalidBodies: ReadonlyArray<[string, unknown]> = [
-  ['an absent body', undefined],
-  ['a null body', null],
-  ['a string body', SPEC],
-  ['a body without a specification', { endpoint: 'openAI', model: 'gpt-4o-mini', code: CODE }],
-  ['a body without an endpoint', { spec: SPEC, model: 'gpt-4o-mini', code: CODE }],
-  ['a body without a model', { spec: SPEC, endpoint: 'openAI', code: CODE }],
-  ['a body without code', { spec: SPEC, endpoint: 'openAI', model: 'gpt-4o-mini' }],
-  ['an empty endpoint', { ...ENTRY, endpoint: '' }],
-  ['a whitespace-only model', { ...ENTRY, model: '   ' }],
-  ['a numeric code', { ...ENTRY, code: 42 }],
-  ['an endpoint past its bound', { ...ENTRY, endpoint: 'a'.repeat(201) }],
-  ['a model past its bound', { ...ENTRY, model: 'a'.repeat(201) }],
-  ['a specification past its bound', { ...ENTRY, spec: 'a'.repeat(WIDGET_SPEC_MAX_LENGTH + 1) }],
-  ['code past the compile bound', { ...ENTRY, code: 'a'.repeat(WIDGET_CODE_MAX_LENGTH + 1) }],
-];
-
-describe('parseWidgetResult', () => {
-  it('accepts a complete entry', () => {
-    expect(parseWidgetResult(ENTRY)).toEqual({ ok: true, value: ENTRY });
-  });
-
-  it('accepts a specification and code that sit exactly on the compile bounds', () => {
-    const spec = 'a'.repeat(WIDGET_SPEC_MAX_LENGTH);
-    const code = 'a'.repeat(WIDGET_CODE_MAX_LENGTH);
-
-    expect(parseWidgetResult({ ...ENTRY, spec, code })).toEqual({
-      ok: true,
-      value: { ...ENTRY, spec, code },
+describe('normalizeStoredWidget', () => {
+  /** Entries stored before the compile became asynchronous are finished
+   *  compiles: the code is already on them. */
+  it('reads a legacy entry with no status as a finished compile', () => {
+    expect(normalizeStoredWidget(LEGACY)).toEqual({
+      spec: SPEC,
+      endpoint: 'openAI',
+      model: 'gpt-4o-mini',
+      code: CODE,
+      status: 'ready',
+      startedAt: 0,
     });
   });
 
-  /** The client compares the entry it stored against the one the route returns. */
-  it('keeps the values it was handed verbatim', () => {
-    const padded = { ...ENTRY, spec: ` ${SPEC} `, endpoint: ' openAI ' };
+  it('leaves a pending entry inside its budget pending', () => {
+    const entry = pendingEntry(Date.now());
 
-    expect(parseWidgetResult(padded)).toEqual({ ok: true, value: padded });
+    expect(normalizeStoredWidget(entry)).toBe(entry);
   });
 
-  it.each(invalidBodies)('refuses %s', (_label, body) => {
-    expect(parseWidgetResult(body)).toEqual({ ok: false });
+  /** Nothing can still be compiling past the protocol ceiling, so the entry was
+   *  orphaned by a restart rather than left running. */
+  it('reads a pending entry past the staleness ceiling as failed', () => {
+    const entry = pendingEntry(Date.now() - WIDGET_PENDING_STALE_MS - 60_000);
+    const normalized = normalizeStoredWidget(entry);
+
+    expect(normalized).toEqual({
+      spec: SPEC,
+      endpoint: 'openAI',
+      model: 'gpt-4o-mini',
+      status: 'failed',
+      error: ORPHANED_ERROR,
+      startedAt: entry.startedAt,
+    });
+    expect(normalized.code).toBeUndefined();
+  });
+
+  it('keeps a pending entry that sits exactly on the staleness ceiling', () => {
+    const now = 1_700_000_000_000;
+    jest.useFakeTimers({ now });
+    try {
+      const entry = pendingEntry(now - WIDGET_PENDING_STALE_MS);
+
+      expect(normalizeStoredWidget(entry)).toBe(entry);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reads a pending entry with no start time as failed', () => {
+    const entry = { ...pendingEntry(Date.now()), startedAt: undefined } as unknown as TStoredWidget;
+
+    expect(normalizeStoredWidget(entry).status).toBe('failed');
+  });
+
+  it('reads a pending entry with an unreadable start time as failed', () => {
+    const entry = { ...pendingEntry(Date.now()), startedAt: NaN };
+
+    expect(normalizeStoredWidget(entry).status).toBe('failed');
+  });
+
+  it('leaves a settled entry alone', () => {
+    expect(normalizeStoredWidget(READY)).toBe(READY);
+    expect(normalizeStoredWidget(FAILED)).toBe(FAILED);
+  });
+});
+
+describe('normalizeStoredWidgets', () => {
+  it('normalizes every entry and keeps their order', () => {
+    const orphan = pendingEntry(Date.now() - WIDGET_PENDING_STALE_MS - 60_000);
+
+    expect(normalizeStoredWidgets([LEGACY, orphan, READY])).toEqual([
+      { ...LEGACY, status: 'ready', startedAt: 0 },
+      { ...orphan, status: 'failed', code: undefined, error: ORPHANED_ERROR },
+      READY,
+    ]);
+  });
+
+  it('answers an empty list for a message that stored nothing', () => {
+    expect(normalizeStoredWidgets([])).toEqual([]);
   });
 });
 
 describe('upsertWidgetResult', () => {
   it('appends the first entry', () => {
-    expect(upsertWidgetResult([], ENTRY)).toEqual([ENTRY]);
+    expect(upsertWidgetResult([], READY)).toEqual([READY]);
   });
 
   it('keeps the oldest entry first and the newest last', () => {
@@ -129,12 +218,137 @@ describe('upsertWidgetResult', () => {
   });
 });
 
+describe('storeWidgetEntry', () => {
+  const message = (widgets?: TStoredWidget[]): StoredWidgetMessage => ({
+    conversationId: CONVERSATION_ID,
+    expiredAt: EXPIRY,
+    widgets,
+  });
+
+  it('writes the entry onto the message and reports it stored', async () => {
+    const { db, saveMessage } = createDb();
+    saveMessage.mockResolvedValue({ messageId: MESSAGE_ID });
+
+    const stored = await storeWidgetEntry({
+      db,
+      req: createServerRequest(),
+      userId: USER_ID,
+      messageId: MESSAGE_ID,
+      message: { ...message([entryFor('a')]), isTemporary: true },
+      entry: READY,
+    });
+
+    expect(stored).toBe(true);
+    expect(saveMessage).toHaveBeenCalledWith(
+      {
+        userId: USER_ID,
+        isTemporary: true,
+        expiredAt: EXPIRY,
+        interfaceConfig: INTERFACE_CONFIG,
+      },
+      {
+        messageId: MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        user: USER_ID,
+        widgets: [entryFor('a'), READY],
+      },
+      { context: 'POST /api/widgets/generate' },
+    );
+  });
+
+  /** The whole array is rewritten on every compile, so an entry that predates
+   *  the status field has to be upgraded rather than re-persisted as it was. */
+  it('normalizes a legacy entry before rewriting the array', async () => {
+    const { db, saveMessage } = createDb();
+    saveMessage.mockResolvedValue({ messageId: MESSAGE_ID });
+    const settled = { ...READY, model: 'gpt-4o' };
+
+    await storeWidgetEntry({
+      db,
+      req: createServerRequest(),
+      userId: USER_ID,
+      messageId: MESSAGE_ID,
+      message: message([LEGACY]),
+      entry: settled,
+    });
+
+    expect(saveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        messageId: MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        user: USER_ID,
+        widgets: [{ ...LEGACY, status: 'ready', startedAt: 0 }, settled],
+      },
+      expect.anything(),
+    );
+  });
+
+  it('writes a pending entry the same way it writes a settled one', async () => {
+    const { db, saveMessage } = createDb();
+    saveMessage.mockResolvedValue({ messageId: MESSAGE_ID });
+    const pending = pendingEntry(Date.now());
+
+    await storeWidgetEntry({
+      db,
+      req: createServerRequest(),
+      userId: USER_ID,
+      messageId: MESSAGE_ID,
+      message: message(),
+      entry: pending,
+    });
+
+    expect(saveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        messageId: MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        user: USER_ID,
+        widgets: [pending],
+      },
+      expect.anything(),
+    );
+  });
+
+  it('reports an entry that was not stored', async () => {
+    const { db, saveMessage } = createDb();
+    saveMessage.mockResolvedValue(null);
+
+    const stored = await storeWidgetEntry({
+      db,
+      req: createServerRequest(),
+      userId: USER_ID,
+      messageId: MESSAGE_ID,
+      message: message(),
+      entry: READY,
+    });
+
+    expect(stored).toBe(false);
+  });
+
+  it('reports a save that answered nothing at all', async () => {
+    const { db, saveMessage } = createDb();
+    saveMessage.mockResolvedValue(undefined);
+
+    const stored = await storeWidgetEntry({
+      db,
+      req: createServerRequest(),
+      userId: USER_ID,
+      messageId: MESSAGE_ID,
+      message: message(),
+      entry: READY,
+    });
+
+    expect(stored).toBe(false);
+  });
+});
+
 describe('createWidgetResultHandlers', () => {
   it('answers an unauthenticated read as unauthorized', async () => {
     const { getMessage, handlers } = createHandlers();
     const { response, status, json } = createResponse();
 
-    await handlers.read(createRequest(ENTRY, false), response);
+    await handlers.read(createRequest({ messageId: MESSAGE_ID }, false), response);
 
     expect(status).toHaveBeenCalledWith(401);
     expect(json).toHaveBeenCalledWith({ error: 'Authentication required' });
@@ -153,14 +367,27 @@ describe('createWidgetResultHandlers', () => {
     expect(json).toHaveBeenCalledWith({ widgets: [] });
   });
 
-  it('returns the stored widgets oldest first', async () => {
+  /** The read path is the only one the client polls, so it is what turns a
+   *  legacy or orphaned entry into something the card can render. */
+  it('returns the stored widgets normalized', async () => {
     const { getMessage, handlers } = createHandlers();
-    getMessage.mockResolvedValue({ conversationId: CONVERSATION_ID, widgets: [ENTRY] });
-    const { response, json } = createResponse();
+    const orphan = pendingEntry(Date.now() - WIDGET_PENDING_STALE_MS - 60_000);
+    getMessage.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      widgets: [LEGACY, orphan, READY],
+    });
+    const { response, status, json } = createResponse();
 
     await handlers.read(createRequest(), response);
 
-    expect(json).toHaveBeenCalledWith({ widgets: [ENTRY] });
+    expect(status).toHaveBeenCalledWith(200);
+    const [body] = json.mock.calls[0] as [TWidgetResultsResponse];
+    expect(body.widgets).toEqual([
+      { ...LEGACY, status: 'ready', startedAt: 0 },
+      { ...orphan, status: 'failed', code: undefined, error: ORPHANED_ERROR },
+      READY,
+    ]);
+    expect(body.widgets[1].code).toBeUndefined();
   });
 
   it('answers not found for a message this user does not own', async () => {
@@ -180,95 +407,6 @@ describe('createWidgetResultHandlers', () => {
     const { response, status } = createResponse();
 
     await handlers.read(createRequest(), response);
-
-    expect(status).toHaveBeenCalledWith(500);
-  });
-
-  it('refuses an invalid body before reading the message', async () => {
-    const { getMessage, saveMessage, handlers } = createHandlers();
-    const { response, status, json } = createResponse();
-
-    await handlers.write(createRequest({ spec: SPEC }), response);
-
-    expect(status).toHaveBeenCalledWith(400);
-    expect(json).toHaveBeenCalledWith({ error: 'Invalid widget result' });
-    expect(getMessage).not.toHaveBeenCalled();
-    expect(saveMessage).not.toHaveBeenCalled();
-  });
-
-  it('answers not found without writing when the message is gone', async () => {
-    const { getMessage, saveMessage, handlers } = createHandlers();
-    getMessage.mockResolvedValue(null);
-    const { response, status } = createResponse();
-
-    await handlers.write(createRequest(), response);
-
-    expect(status).toHaveBeenCalledWith(404);
-    expect(saveMessage).not.toHaveBeenCalled();
-  });
-
-  it('stores the entry and answers with the full list', async () => {
-    const { getMessage, saveMessage, handlers } = createHandlers();
-    getMessage.mockResolvedValue({
-      conversationId: CONVERSATION_ID,
-      isTemporary: true,
-      expiredAt: EXPIRY,
-      widgets: [entryFor('a')],
-    });
-    saveMessage.mockResolvedValue({ messageId: MESSAGE_ID });
-    const { response, status, json } = createResponse();
-
-    await handlers.write(createRequest(), response);
-
-    expect(saveMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: USER_ID, isTemporary: true, expiredAt: EXPIRY }),
-      {
-        messageId: MESSAGE_ID,
-        conversationId: CONVERSATION_ID,
-        user: USER_ID,
-        widgets: [entryFor('a'), ENTRY],
-      },
-      { context: 'POST /api/messages/widgets/:messageId' },
-    );
-    expect(status).toHaveBeenCalledWith(200);
-    expect(json).toHaveBeenCalledWith({ widgets: [entryFor('a'), ENTRY] });
-  });
-
-  it('leaves the answer to the subagent guard, without writing', async () => {
-    const { getMessage, saveMessage, rejectSubagentWrite, handlers } = createHandlers();
-    getMessage.mockResolvedValue({ conversationId: CONVERSATION_ID });
-    rejectSubagentWrite.mockResolvedValue(true);
-    const { response, status } = createResponse();
-
-    await handlers.write(createRequest(), response);
-
-    expect(rejectSubagentWrite).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      CONVERSATION_ID,
-    );
-    expect(saveMessage).not.toHaveBeenCalled();
-    expect(status).not.toHaveBeenCalled();
-  });
-
-  it('reports an entry that was not stored', async () => {
-    const { getMessage, saveMessage, handlers } = createHandlers();
-    getMessage.mockResolvedValue({ conversationId: CONVERSATION_ID });
-    saveMessage.mockResolvedValue(null);
-    const { response, status } = createResponse();
-
-    await handlers.write(createRequest(), response);
-
-    expect(status).toHaveBeenCalledWith(500);
-  });
-
-  it('reports a failed write as an internal error', async () => {
-    const { getMessage, saveMessage, handlers } = createHandlers();
-    getMessage.mockResolvedValue({ conversationId: CONVERSATION_ID });
-    saveMessage.mockRejectedValue(new Error('write failed'));
-    const { response, status } = createResponse();
-
-    await handlers.write(createRequest(), response);
 
     expect(status).toHaveBeenCalledWith(500);
   });

@@ -1,21 +1,47 @@
 import { logger } from '@librechat/data-schemas';
-import type { TWidgetGenerateResponse } from 'librechat-data-provider';
+import type { TStoredWidget, TWidgetGenerateResponse } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { EndpointDbMethods, ServerRequest } from '~/types';
-import { parseWidgetGenerateRequest, validateWidgetCode, widgetRejectionMessage } from './validate';
+import type { WidgetResultDbMethods } from './results';
+import type { WidgetCompileJobParams } from './job';
+import {
+  loadOwnedMessage,
+  normalizeStoredWidgets,
+  storeWidgetEntry,
+  upsertWidgetResult,
+} from './results';
+import { parseWidgetGenerateRequest, widgetRejectionMessage } from './validate';
 import { generateWidgetCode } from './generate';
+import { runWidgetCompile } from './job';
 
 export type WidgetGenerateHandler = (req: ServerRequest, res: Response) => Promise<void>;
 
+export type WidgetCompileJob = (params: WidgetCompileJobParams) => void;
+
+/** The route passes `~/models`, which carries both the provider-credential and
+ *  the message-storage methods this path needs. */
+export interface WidgetGenerateDbMethods extends EndpointDbMethods, WidgetResultDbMethods {}
+
 export interface WidgetGenerateHandlerDeps {
-  /** Provider-credential lookups, supplied by the route rather than reached for. */
-  db: EndpointDbMethods;
+  db: WidgetGenerateDbMethods;
   /** The compile call; injectable so the handler is testable at the provider boundary. */
   generate?: typeof generateWidgetCode;
+  /** The detached compile; injectable so the handler is testable without one. */
+  job?: WidgetCompileJob;
 }
 
 /**
- * Compiles one `widgetSpec.prompt` into a component body.
+ * Starts one `widgetSpec.prompt` compile and answers as soon as the pending
+ * entry is stored.
+ *
+ * The compile itself is detached: a non-streaming codegen call outlives what a
+ * reverse proxy will hold a request open, so the request only records that a
+ * compile is running and the client polls the message's results for the outcome.
+ *
+ * Two start requests for the same spec, endpoint and model both write `pending`
+ * and both run a compile; whichever settles last wins. That is a duplicate
+ * compile rather than a corrupted record, and the client cannot normally issue
+ * it — the regenerate control is disabled while a compile is in flight.
  *
  * Model authorization has already happened by the time this runs — the route
  * mounts `validateModel`, which trims `req.body.model` in place and rejects a
@@ -24,6 +50,7 @@ export interface WidgetGenerateHandlerDeps {
 export function createWidgetGenerateHandler({
   db,
   generate = generateWidgetCode,
+  job = runWidgetCompile,
 }: WidgetGenerateHandlerDeps): WidgetGenerateHandler {
   return async (req, res) => {
     if (req.user == null) {
@@ -35,23 +62,38 @@ export function createWidgetGenerateHandler({
       res.status(400).json({ error: widgetRejectionMessage(parsed.rejection) });
       return;
     }
-    const { endpoint, model, spec } = parsed.value;
-    let code: string;
+    const { messageId, endpoint, model, spec } = parsed.value;
+    const startedAt = Date.now();
+    const entry: TStoredWidget = { spec, endpoint, model, status: 'pending', startedAt };
+    let pending: WidgetCompileJobParams;
     try {
-      code = await generate({ req, endpoint, model, spec, db });
+      /** Loading the message this way is also what authorizes the write: the
+       *  compile is stored against a message the caller owns, exactly as the
+       *  results route checks before reading one back. */
+      const owned = await loadOwnedMessage(req, res, db, messageId);
+      if (owned == null) {
+        return;
+      }
+      const { userId, message } = owned;
+      /** A compile whose outcome cannot be recorded is pure waste, so the job
+       *  only starts once the pending entry is on the message. */
+      const stored = await storeWidgetEntry({ db, req, userId, messageId, message, entry });
+      if (!stored) {
+        res.status(500).json({ error: 'Failed to store widget result' });
+        return;
+      }
+      const body: TWidgetGenerateResponse = {
+        widgets: upsertWidgetResult(normalizeStoredWidgets(message.widgets ?? []), entry),
+      };
+      res.status(202).json(body);
+      pending = { req, messageId, userId, spec, endpoint, model, db, generate, startedAt };
     } catch (error) {
-      logger.error(`[widgets] Compile call failed (endpoint: ${endpoint})`, error);
-      res.status(502).json({ error: 'The widget could not be compiled' });
+      logger.error('[widgets] Failed to start a widget compile', error);
+      res.status(500).json({ error: 'Internal server error' });
       return;
     }
-    const validated = validateWidgetCode(code);
-    if (!validated.ok) {
-      const detail = validated.detail == null ? '' : `: ${validated.detail}`;
-      logger.warn(`[widgets] Rejected compiled code (${validated.rejection}${detail}) from ${endpoint}`);
-      res.status(502).json({ error: widgetRejectionMessage(validated.rejection) });
-      return;
-    }
-    const body: TWidgetGenerateResponse = { code: validated.code };
-    res.status(200).json(body);
+    /** Started only once the response is on the wire, so the client is
+     *  unblocked no matter how long the compile runs. */
+    job(pending);
   };
 }
