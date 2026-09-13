@@ -26,6 +26,7 @@ const {
   mergeUserSubmittedPaths,
   mergeUserSubmittedMessageFieldPaths,
   isContentFilterError,
+  createWidgetResultHandlers,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { findAllArtifacts, replaceArtifactContent } = require('~/server/services/Artifacts/update');
@@ -485,6 +486,17 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+const widgetResults = createWidgetResultHandlers({
+  db,
+  rejectSubagentWrite: rejectSubagentThreadWrite,
+});
+
+// Both must precede the parameterized GET below, which would otherwise swallow
+// `/widgets/:messageId` as a conversation/message pair.
+router.get('/widgets/:messageId', configMiddleware, widgetResults.read);
+
+router.post('/widgets/:messageId', configMiddleware, widgetResults.write);
 
 router.get('/:conversationId', prepareMessageRequestValidation, async (req, res) => {
   try {

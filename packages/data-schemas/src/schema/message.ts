@@ -267,6 +267,23 @@ const messageSchema: Schema<IMessage> = new Schema(
      * count), so they are not duplicated into the stored `text`.
      */
     quotes: { type: [String], default: undefined },
+    /**
+     * Compiled cards the user generated from this message's `GenerateWidget`
+     * tag, kept on the message so a refresh restores them instead of losing
+     * the compiled component with the client's in-memory state.
+     */
+    widgets: {
+      type: [
+        {
+          _id: false,
+          spec: { type: String, required: true },
+          endpoint: { type: String, required: true },
+          model: { type: String, required: true },
+          code: { type: String, required: true },
+        },
+      ],
+      default: undefined,
+    },
     /*
     attachments: {
       type: [

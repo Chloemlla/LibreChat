@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Alert, Button, Skeleton } from '@librechat/client';
 import { resolveModelCatalogKey } from 'librechat-data-provider';
-import { useGenerateWidgetMutation, useGetModelsQuery } from 'librechat-data-provider/react-query';
+import {
+  useGenerateWidgetMutation,
+  useGetModelsQuery,
+  useGetWidgetResultsQuery,
+  useSaveWidgetResultMutation,
+} from 'librechat-data-provider/react-query';
 import type { WidgetHostCommand } from './frame';
 import type { WidgetNodeProps } from './plugin';
 import {
@@ -15,6 +20,7 @@ import {
   WIDGET_HEIGHT_DEFAULT,
 } from './frame';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { CardTagText } from './Tag';
 
@@ -68,13 +74,16 @@ function WidgetError({ message, onRetry }: { message: string; onRetry: () => voi
 
 function WidgetCard({ node }: WidgetNodeProps) {
   const localize = useLocalize();
+  const { messageId } = useMessageContext();
   const { properties } = node;
   const spec = properties.spec ?? '';
   const tagHeight = Number.parseFloat(properties.height ?? '');
 
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { data: modelsConfig } = useGetModelsQuery();
+  const { data: widgetResults } = useGetWidgetResultsQuery(messageId);
   const { mutate } = useGenerateWidgetMutation();
+  const { mutate: saveWidget } = useSaveWidgetResultMutation();
 
   const [endpoint, setEndpoint] = useState('');
   const [model, setModel] = useState('');
@@ -84,6 +93,8 @@ function WidgetCard({ node }: WidgetNodeProps) {
 
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const frameReadyRef = useRef(false);
+  const restoreDoneRef = useRef(false);
+  const userChosenRef = useRef(false);
   const [dark, setDark] = useState(readWidgetDark);
   const postedDarkRef = useRef(dark);
   const initialHeight = Number.isFinite(tagHeight)
@@ -114,11 +125,22 @@ function WidgetCard({ node }: WidgetNodeProps) {
     return modelsConfig[resolveModelCatalogKey(endpoint, modelsConfig)] ?? [];
   }, [endpoint, modelsConfig]);
 
+  /* The card and its message share only the id, so what was compiled here has to come
+     back by its own triple. A stored result for another spec is a different card's. */
+  const widgets = widgetResults?.widgets;
+  const stored = useMemo(() => {
+    const entries = new Map<string, string>();
+    for (const widget of widgets ?? []) {
+      entries.set(`${widget.endpoint}|${widget.model}|${widget.spec}`, widget.code);
+    }
+    return entries;
+  }, [widgets]);
+
   const hasSelection = endpoint !== '' && model !== '';
   /* Endpoint keys and model ids cannot contain a pipe, so the first two fields of
      the key cannot be confused with the spec that follows them. */
   const cacheKey = hasSelection ? `${endpoint}|${model}|${spec}` : '';
-  const code = compiled.get(cacheKey) ?? null;
+  const code = hasSelection ? (compiled.get(cacheKey) ?? stored.get(cacheKey) ?? null) : null;
   const isCompiling = pendingKey !== null && pendingKey === cacheKey;
   const failedCompile = failure !== null && failure.key === cacheKey ? failure.message : null;
   const frameFailed = frameState.status === 'failed';
@@ -147,6 +169,9 @@ function WidgetCard({ node }: WidgetNodeProps) {
       {
         onSuccess: (data) => {
           setCompiled((previous) => new Map(previous).set(cacheKey, data.code));
+          if (messageId) {
+            saveWidget({ messageId, widget: { spec, endpoint, model, code: data.code } });
+          }
         },
         onError: (error) => {
           const message = readErrorMessage(error, localize('com_ui_widget_error'));
@@ -157,7 +182,7 @@ function WidgetCard({ node }: WidgetNodeProps) {
         },
       },
     );
-  }, [cacheKey, endpoint, hasSelection, localize, model, mutate, spec]);
+  }, [cacheKey, endpoint, hasSelection, localize, messageId, model, mutate, saveWidget, spec]);
 
   const onFrameRetry = useCallback(() => {
     if (!code) {
@@ -168,13 +193,30 @@ function WidgetCard({ node }: WidgetNodeProps) {
   }, [code, postCode]);
 
   const onEndpointChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    userChosenRef.current = true;
     setEndpoint(event.target.value);
     setModel('');
   }, []);
 
   const onModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    userChosenRef.current = true;
     setModel(event.target.value);
   }, []);
+
+  /**
+   * A stored result is unreachable without the choice that produced it, so the latest
+   * one — the server appends — is adopted once. The refs keep that from fighting the
+   * user: it cannot repeat on a refetch, nor override a choice already made.
+   */
+  useEffect(() => {
+    const latest = widgets?.at(-1);
+    if (restoreDoneRef.current || userChosenRef.current || latest == null) {
+      return;
+    }
+    restoreDoneRef.current = true;
+    setEndpoint(latest.endpoint);
+    setModel(latest.model);
+  }, [widgets]);
 
   /**
    * The host answers only its own frame, and only with a payload the protocol

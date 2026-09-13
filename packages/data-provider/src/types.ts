@@ -665,6 +665,19 @@ export type TWidgetGenerateResponse = {
   code: string;
 };
 
+/** One compiled card result kept with the message that carries its tag. */
+export type TStoredWidget = {
+  spec: string;
+  endpoint: string;
+  model: string;
+  code: string;
+};
+
+/** The compiled card results stored on one message, oldest first. */
+export type TWidgetResultsResponse = {
+  widgets: TStoredWidget[];
+};
+
 /** Server-resolved context window and pricing for one model. Rates are USD per 1M tokens. */
 export type TModelTokenomics = {
   context?: number;

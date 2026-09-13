@@ -211,6 +211,30 @@ export const useGenerateWidgetMutation = (): UseMutationResult<
   );
 };
 
+export const useGetWidgetResultsQuery = (
+  messageId: string,
+  config?: UseQueryOptions<t.TWidgetResultsResponse>,
+): QueryObserverResult<t.TWidgetResultsResponse> => {
+  return useQuery<t.TWidgetResultsResponse>(
+    [QueryKeys.widgetResults, messageId],
+    () => dataService.getWidgetResults(messageId),
+    { ...config, enabled: !!messageId && (config?.enabled ?? true) },
+  );
+};
+
+export const useSaveWidgetResultMutation = (): UseMutationResult<
+  t.TWidgetResultsResponse,
+  unknown,
+  { messageId: string; widget: t.TStoredWidget },
+  unknown
+> => {
+  return useMutation(
+    (vars: { messageId: string; widget: t.TStoredWidget }) =>
+      dataService.saveWidgetResult(vars.messageId, vars.widget),
+    { mutationKey: [MutationKeys.saveWidgetResult] },
+  );
+};
+
 export const useCreatePresetMutation = (): UseMutationResult<
   s.TPreset,
   unknown,

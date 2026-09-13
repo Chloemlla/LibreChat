@@ -204,6 +204,9 @@ export const tokenizer = () => `${BASE_URL}/api/tokenizer`;
 
 export const widgetGenerate = () => `${BASE_URL}/api/widgets/generate`;
 
+export const widgetResults = (messageId: string) =>
+  `${BASE_URL}/api/messages/widgets/${encodeURIComponent(messageId)}`;
+
 export const login = () => `${BASE_URL}/api/auth/login`;
 
 export const logout = () => `${BASE_URL}/api/auth/logout`;

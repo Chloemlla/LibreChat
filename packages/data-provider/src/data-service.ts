@@ -499,6 +499,15 @@ export const generateWidget = async (
   return request.post(endpoints.widgetGenerate(), payload);
 };
 
+export const getWidgetResults = async (messageId: string): Promise<t.TWidgetResultsResponse> =>
+  request.get(endpoints.widgetResults(messageId));
+
+export const saveWidgetResult = async (
+  messageId: string,
+  widget: t.TStoredWidget,
+): Promise<t.TWidgetResultsResponse> =>
+  request.post(endpoints.widgetResults(messageId), widget);
+
 /* Assistants */
 
 export const createAssistant = ({

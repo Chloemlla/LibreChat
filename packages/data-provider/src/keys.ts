@@ -1,5 +1,6 @@
 export enum QueryKeys {
   messages = 'messages',
+  widgetResults = 'widgetResults',
   sharedMessages = 'sharedMessages',
   sharedStartupConfig = 'sharedStartupConfig',
   sharedLinks = 'sharedLinks',
@@ -119,6 +120,7 @@ export const DynamicQueryKeys = {
 
 export enum MutationKeys {
   generateWidget = 'generateWidget',
+  saveWidgetResult = 'saveWidgetResult',
   subagentControl = 'subagentControl',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
