@@ -1,5 +1,4 @@
 import React from 'react';
-import { MemoryRouter } from 'react-router-dom';
 import { render, screen, fireEvent, act } from 'test/layout-test-utils';
 import Markdown from '../../Chat/Messages/Content/Markdown';
 import { GGB_COMMAND_MAX_COUNT } from '../plugin';
@@ -33,12 +32,12 @@ const tag = (body: string, height?: string): string =>
 
 const body = (commands: string[] = COMMANDS): string => commands.join('\n');
 
+/* `render` from `test/layout-test-utils` already supplies the router, so a second one
+   here would be nested inside it. */
 const wrap = (ui: React.ReactNode) => (
-  <MemoryRouter>
-    <MessageContext.Provider value={{ messageId: 'm1', isExpanded: true }}>
-      {ui}
-    </MessageContext.Provider>
-  </MemoryRouter>
+  <MessageContext.Provider value={{ messageId: 'm1', isExpanded: true }}>
+    {ui}
+  </MessageContext.Provider>
 );
 
 const renderMessage = (content: string) =>

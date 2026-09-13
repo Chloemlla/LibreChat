@@ -11,6 +11,12 @@ const GGB_TAG = 'GenerateGGB';
  * raw HTML blocks, and a spec that drifts from the `widgetSpec` shape renders
  * as literal text. Both constraints are therefore stated explicitly rather
  * than left to the model's formatting habits.
+ *
+ * `dedent` reads the raw text, so the `\\n` written inside the example arrives intact —
+ * but its final pass replaces a backslash followed by `n` with a real newline, which
+ * leaves a stray backslash before the break. The pass after the template puts the escape
+ * back: a real newline inside that JSON string would both split the block and make the
+ * example invalid JSON.
  */
 const widgetsPrompt = dedent`You can answer with an interactive card instead of prose.
 
@@ -43,7 +49,10 @@ The \`prompt\` is a specification for a separate component that will build the c
 Write the specification in English prose and lists. Do not write code, JSX, imports or file names in it. Do not state visual styling beyond what the behavior requires.
 
 # After emitting
-The card appears where the tag was. Do not repeat the card's contents in prose afterwards, and do not describe what the user will see.`;
+The card appears where the tag was. Do not repeat the card's contents in prose afterwards, and do not describe what the user will see.`.replace(
+  /\\\n/g,
+  '\\n',
+);
 
 /**
  * Protocol directive for the GeoGebra figure card.

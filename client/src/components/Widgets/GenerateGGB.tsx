@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Alert, Button } from '@librechat/client';
-import type { GgbHostCommand, GgbNodeProps } from './plugin';
+import type { GgbHostCommand } from './frame';
+import type { GgbNodeProps } from './plugin';
 import {
   clampWidgetHeight,
   geogebraOrigin,
@@ -34,7 +35,7 @@ function GgbError({ message, onRetry }: { message: string; onRetry: () => void }
   );
 }
 
-function GgbCard({ node, origin }: { node: GgbNodeProps; origin: string }) {
+function GgbCard({ node, origin }: { node: GgbNodeProps['node']; origin: string }) {
   const localize = useLocalize();
   const { properties } = node;
   const commands = useMemo(

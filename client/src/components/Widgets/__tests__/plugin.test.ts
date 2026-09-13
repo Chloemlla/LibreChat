@@ -55,6 +55,10 @@ const runOnText = (value: string): TestNode[] => {
   return tree.children ?? [];
 };
 
+/** Every string the tree renders, so a tag left as text is found wherever markdown nested it. */
+const renderedText = (node: TestNode): string =>
+  (node.value ?? '') + (node.children ?? []).map(renderedText).join('');
+
 const GGB_COMMANDS = ['A=(1,2)', 'f(x)=x^2', 'Circle(A,3)'];
 
 const ggbTag = (inner: string, height?: string): string =>
@@ -98,10 +102,23 @@ describe('generateWidgetPlugin', () => {
     });
 
     it('reassembles a tag markdown folded into the paragraph above it', () => {
-      const tree = parse(`Here is a card.\n${tag(body(), '600px')}`);
+      /* A spec with no markdown of its own, so the paragraph holds nothing but text and
+         inline HTML. The shape real output takes is the case below. */
+      const tree = parse(`Here is a card.\n${tag(body('plot the series'), '600px')}`);
 
       expect(tree.children?.some((child) => child.type === 'paragraph')).toBe(false);
       expect(widgetNodes(tree)).toHaveLength(1);
+    });
+
+    it('leaves a folded tag as text when its spec carries markdown of its own', () => {
+      /* The directive's example spec opens with `**Objective:**`, so markdown reads that
+         emphasis out of the JSON and into a sibling node. Rebuilding the paragraph would
+         mean reprinting the emphasis, and a rebuild that gets prose wrong deletes text the
+         user cannot recover, so the pass leaves the source exactly as markdown made it. */
+      const tree = parse(`Here is a card.\n${tag(body(), '600px')}`);
+
+      expect(widgetNodes(tree)).toHaveLength(0);
+      expect(renderedText(tree)).toContain('<GenerateWidget');
     });
 
     it('keeps a paragraph mixing emphasis with a card, formatting intact', () => {
@@ -289,10 +306,12 @@ describe('a GeoGebra tag', () => {
   });
 
   it('leaves a tag with no command at all as text', () => {
+    /* The two tags sit on one line, so markdown makes them inline HTML inside a paragraph
+       rather than a block of their own; what matters is that the source is still rendered. */
     const tree = parse(`Here is a figure.\n\n<GenerateGGB height="480px"></GenerateGGB>`);
 
     expect(ggbNodes(tree)).toHaveLength(0);
-    expect(tree.children?.some((child) => child.value?.includes('<GenerateGGB'))).toBe(true);
+    expect(renderedText(tree)).toContain('<GenerateGGB');
   });
 
   it('leaves a tag whose closing tag has not streamed in yet', () => {
