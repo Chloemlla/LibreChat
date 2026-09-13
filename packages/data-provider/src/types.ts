@@ -17,6 +17,7 @@ import type {
 } from './code/workspace';
 import type { CodeEnvironmentUserConfigSchema, CodeEnvironmentUserSettings } from './config';
 import type { Agent, EToolResources, StatefulCodeEnvironment } from './types/assistants';
+import type { BaseSystemCapability } from './capabilities';
 import type { CodeApprovalMode } from './code/approval';
 import type { RefillIntervalUnit } from './balance';
 import type { SettingDefinition } from './generate';
@@ -994,6 +995,8 @@ export type TBalanceResponse = {
   lastRefill?: Date | string;
   refillAmount?: number;
 };
+
+export type TUserCapabilitiesResponse = { capabilities: BaseSystemCapability[] };
 
 /* -------------------------------------------------------------------------- */
 /* Skill UI extensions (not yet persisted — phase 2 backend will fill these)  */

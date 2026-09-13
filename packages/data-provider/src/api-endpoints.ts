@@ -48,6 +48,8 @@ export const balance = () => `${BASE_URL}/api/balance`;
 
 export const userPlugins = () => `${BASE_URL}/api/user/plugins`;
 
+export const userCapabilities = () => `${BASE_URL}/api/user/capabilities`;
+
 export const deleteUser = () => `${BASE_URL}/api/user/delete`;
 export const codeEnvironments = () => `${BASE_URL}/api/code-environments`;
 export const codeEnvironmentPairings = () => `${codeEnvironments()}/pairings`;

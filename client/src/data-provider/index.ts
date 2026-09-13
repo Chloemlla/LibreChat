@@ -1,6 +1,7 @@
 export * from './Auth';
 export * from './Agents';
 export * from './AdminConfig';
+export * from './Capabilities';
 export * from './Endpoints';
 export * from './Skills';
 export * from './Files';

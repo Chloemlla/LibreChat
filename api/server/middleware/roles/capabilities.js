@@ -1,4 +1,8 @@
-const { generateCapabilityCheck, capabilityContextMiddleware } = require('@librechat/api');
+const {
+  generateCapabilityCheck,
+  capabilityContextMiddleware,
+  listBaseCapabilities,
+} = require('@librechat/api');
 const {
   getUserPrincipals,
   hasAnyConfigReadAccess,
@@ -20,6 +24,8 @@ const {
   getHeldCapabilities: getHeldCapabilitiesForPrincipals,
 });
 
+const listHeldBaseCapabilities = listBaseCapabilities({ getHeldCapabilities });
+
 module.exports = {
   hasCapability,
   requireCapability,
@@ -28,4 +34,5 @@ module.exports = {
   capabilityContextMiddleware,
   hasAnyConfigReadAccess: checkAnyConfigReadAccess,
   getReadableConfigSections,
+  listBaseCapabilities: listHeldBaseCapabilities,
 };

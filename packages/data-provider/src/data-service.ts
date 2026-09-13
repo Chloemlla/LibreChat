@@ -380,6 +380,10 @@ export function getUserBalance(): Promise<t.TBalanceResponse> {
   return request.get(endpoints.balance());
 }
 
+export function getUserCapabilities(): Promise<t.TUserCapabilitiesResponse> {
+  return request.get(endpoints.userCapabilities());
+}
+
 export const updateTokenCount = (text: string) => {
   return request.post(endpoints.tokenizer(), { arg: text });
 };

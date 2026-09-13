@@ -7,6 +7,8 @@ export * from './credentials';
 export * from './artifacts';
 /* Admin */
 export * from './admin';
+/* Capabilities */
+export * from './capabilities';
 export * from './cdn';
 export * from './code';
 /* Auth */

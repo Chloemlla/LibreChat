@@ -23,6 +23,7 @@ export * from './mcp';
 /* RBAC */
 export * from './permissions';
 export * from './roles';
+export * from './capabilities';
 /* types (exports schemas from `./types` as they contain needed in other defs) */
 export * from './types';
 export * from './types/agents';
