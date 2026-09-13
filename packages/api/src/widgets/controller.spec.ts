@@ -17,13 +17,15 @@ const createRequest = (
 ): ServerRequest => {
   const body = { endpoint: 'openAI', model: 'gpt-4o-mini', spec: SPEC, ...overrides };
   const user = { id: 'user-id', role: 'USER', tenantId: 'tenant-a' };
-  return (authenticated ? { query: {}, body, user } : { query: {}, body }) as ServerRequest;
+  return (
+    authenticated ? { query: {}, body, user } : { query: {}, body }
+  ) as unknown as ServerRequest;
 };
 
 const createResponse = () => {
   const json = jest.fn();
   const status = jest.fn(() => ({ json }));
-  return { response: { status, json } as Partial<Response> as Response, status, json };
+  return { response: { status, json } as unknown as Response, status, json };
 };
 
 const createHandler = (generate = jest.fn().mockResolvedValue(COMPONENT)) => ({

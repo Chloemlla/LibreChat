@@ -250,6 +250,24 @@ interface:
   # <GenerateWidget> tag carrying a card specification; the client compiles it into a sandboxed
   # component. Set false to stop injecting the directive entirely.
   widgets: true
+  # Origin serving the GeoGebra figure runtime, for a second kind of card where the model emits
+  # GeoGebra commands and the user gets a draggable figure. UNSET BY DEFAULT, and the feature is
+  # off while it is unset: nothing is injected into the prompt and no renderer is registered, so
+  # a <GenerateGGB> tag stays literal text.
+  # It must be an origin of its own — NOT this application's address, and a different host even
+  # when it differs only by subdomain. GeoGebra's loader puts the module in a hidden same-origin
+  # child frame, so its frame has to be given allow-same-origin; served from the application's own
+  # origin that permission is equivalent to giving the frame this app's rights, while a separate
+  # origin leaves the real same-origin policy in place to block access to the app's DOM and cookies.
+  # Serve client/dist/ggb-runtime.html and client/dist/geogebra/ at the root of that origin, and
+  # set this to the origin only — no path. A trailing slash is accepted and stripped.
+  # e.g. https://ggb.example.com (http://localhost:3099 is accepted for local development).
+  # geogebraOrigin: 'https://ggb.example.com'
+  # Budget for one widget compile call, in milliseconds (default: 120000).
+  # A compile that outlives it is aborted and the card renders an error, so raise it when a model
+  # legitimately needs longer to write a component. The ceiling is 300000 (5 minutes)
+  # and a larger value is clamped to it.
+  # widgetCompileTimeoutMs: 120000
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true
   # Tools pinned to the prompt bar by default for all users.

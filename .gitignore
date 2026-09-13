@@ -40,6 +40,8 @@ public/main.js
 public/main.js.map
 public/main.js.LICENSE.txt
 client/public/images/
+# Fetched by client/scripts/ggb/fetch.mjs (prebuild): 33 MB bundle, ~27 MB extracted
+client/public/geogebra/
 client/public/main.js
 client/public/main.js.map
 client/public/main.js.LICENSE.txt

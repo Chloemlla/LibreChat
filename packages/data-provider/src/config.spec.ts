@@ -1,9 +1,11 @@
 import type { TEndpointsConfig } from './types';
 import {
+  WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS,
   allowedAddressesSchema,
   bedrockModels,
   configSchema,
   excludedKeys,
+  interfaceSchema,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
@@ -1326,5 +1328,74 @@ describe('MCP UI refresh configuration', () => {
         interface: { mcpServers: { statusRefreshInterval: interval } },
       }).success,
     ).toBe(false);
+  });
+});
+
+/**
+ * `geogebraOriginSchema` is module-private, so the field is exercised through the exported
+ * `interfaceSchema`; only its effect on the parsed value is observable.
+ */
+describe('interface geogebraOrigin config', () => {
+  it('accepts an http(s) origin unchanged', () => {
+    const https = interfaceSchema.parse({ geogebraOrigin: 'https://ggb.example.com' });
+    const http = interfaceSchema.parse({ geogebraOrigin: 'http://ggb.example.com' });
+
+    expect(https.geogebraOrigin).toBe('https://ggb.example.com');
+    expect(http.geogebraOrigin).toBe('http://ggb.example.com');
+  });
+
+  it('strips one trailing slash instead of refusing it', () => {
+    const result = interfaceSchema.parse({ geogebraOrigin: 'https://ggb.example.com/' });
+
+    expect(result.geogebraOrigin).toBe('https://ggb.example.com');
+  });
+
+  it.each([
+    ['https://ggb.example.com/ggb', 'path'],
+    ['ftp://ggb.example.com', 'non-http(s) scheme'],
+    ['https://user:pass@ggb.example.com', 'credentials'],
+    ['https://ggb.example.com?a=1', 'query'],
+    ['https://ggb.example.com#x', 'fragment'],
+    ['ggb.example.com', 'not a URL'],
+  ])('rejects "%s" (%s)', (origin) => {
+    expect(() => interfaceSchema.parse({ geogebraOrigin: origin })).toThrow();
+  });
+
+  it('leaves the field undefined when omitted', () => {
+    const result = interfaceSchema.parse({});
+
+    expect(result.geogebraOrigin).toBeUndefined();
+  });
+});
+
+describe('interface widgetCompileTimeoutMs config', () => {
+  it('accepts an in-range integer budget', () => {
+    const result = interfaceSchema.parse({ widgetCompileTimeoutMs: 90_000 });
+
+    expect(result.widgetCompileTimeoutMs).toBe(90_000);
+  });
+
+  it('accepts the exported hard maximum itself', () => {
+    const result = interfaceSchema.parse({
+      widgetCompileTimeoutMs: WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS,
+    });
+
+    expect(result.widgetCompileTimeoutMs).toBe(WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS);
+  });
+
+  it('keeps the hard maximum at the five-minute timer ceiling', () => {
+    expect(WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS).toBe(300_000);
+  });
+
+  it.each([0, -1, 1.5, WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS + 1])('rejects budget %s', (budget) => {
+    const result = interfaceSchema.safeParse({ widgetCompileTimeoutMs: budget });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('leaves the field undefined when omitted', () => {
+    const result = interfaceSchema.parse({});
+
+    expect(result.widgetCompileTimeoutMs).toBeUndefined();
   });
 });

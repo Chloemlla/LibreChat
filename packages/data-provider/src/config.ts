@@ -1846,6 +1846,55 @@ export enum RetentionMode {
   TEMPORARY = 'temporary',
 }
 
+/**
+ * The GeoGebra figure frame must carry `allow-same-origin` — its GWT bootstrap
+ * loads the module into a hidden same-origin child frame — so the runtime has to
+ * be served from an origin of its own rather than the application's. The value is
+ * what the client builds the frame's `src` from and what it addresses the frame's
+ * messages to, so it must be a bare http(s) origin: a non-http scheme or
+ * a path would put the frame somewhere other than the operator intends, or make
+ * the runtime URL unbuildable. The path check is also what keeps the name honest
+ * — it is an origin, not a URL, and the client concatenates a fixed path onto it.
+ * A trailing slash is stripped rather than refused: `https://host/` would build a
+ * doubled slash that some static servers do not resolve.
+ */
+const geogebraOriginSchema = z
+  .string()
+  .trim()
+  .url()
+  .refine(
+    (value) => {
+      try {
+        const url = new URL(value);
+        return (
+          (url.protocol === 'http:' || url.protocol === 'https:') &&
+          url.pathname === '/' &&
+          url.search.length === 0 &&
+          url.hash.length === 0 &&
+          url.username.length === 0 &&
+          url.password.length === 0
+        );
+      } catch {
+        return false;
+      }
+    },
+    {
+      message:
+        'geogebraOrigin must be an http(s) origin with no path, e.g. https://ggb.example.com',
+    },
+  )
+  .transform((value) => value.replace(/\/+$/, ''));
+
+/** Writing a whole component in one call is slow, so a tight budget loses cards that
+ *  were going to succeed: at a minute, compiles were being cut off by our own abort
+ *  rather than by the provider. */
+export const WIDGET_COMPILE_TIMEOUT_DEFAULT_MS: number = 120_000;
+/** Protocol-level ceiling for a configured compile budget, the same bound the
+ *  code environment puts on a command. `AbortSignal.timeout` feeds its delay to
+ *  a 32-bit timer, so a larger value would fire the abort on the next tick
+ *  rather than after the requested time; the compile path clamps to it. */
+export const WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS: number = 5 * 60_000;
+
 export const interfaceSchema = z
   .object({
     privacyPolicy: z
@@ -1917,6 +1966,29 @@ export const interfaceSchema = z
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
     widgets: z.boolean().optional(),
+    /**
+     * Budget for one widget compile call, in milliseconds. Omission preserves the
+     * `WIDGET_COMPILE_TIMEOUT_DEFAULT_MS` budget every deployment ran before the
+     * lever existed. Capped well below the 32-bit timer ceiling `AbortSignal.timeout`
+     * degrades past — beyond it the abort fires on the next tick instead of after
+     * the requested delay — and no compile has a policy reason to hang longer than
+     * the code environment lets a command run.
+     */
+    widgetCompileTimeoutMs: z
+      .number()
+      .int()
+      .min(1)
+      .max(WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS)
+      .optional(),
+    /**
+     * Origin serving the GeoGebra figure runtime, e.g. `https://ggb.example.com`.
+     * Deliberately without a default: the figure frame is the one card that needs
+     * `allow-same-origin`, so it only exists when the operator has stood up a
+     * separate origin to hold it. A default would either point every deployment at
+     * an address that does not exist, or quietly serve the runtime from the app's
+     * own origin — which is the configuration this key exists to avoid.
+     */
+    geogebraOrigin: geogebraOriginSchema.optional(),
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
@@ -2020,6 +2092,9 @@ export const interfaceSchema = z
     fileSearch: true,
     fileCitations: true,
     widgets: true,
+    // `geogebraOrigin` is deliberately ABSENT from this default: the figure card is
+    // opt-in, and its absence is what tells both the server and the client that no
+    // renderer exists. See the field comment in interfaceSchema.
     buildInfo: true,
     remoteAgents: {
       use: false,

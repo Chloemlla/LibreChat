@@ -113,7 +113,7 @@ import { filterFilesByEndpointRuntimeConfig } from '~/files';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { PARTIAL_RESOLVED_CONVERSATION } from './guard';
 import { applyBackgroundToolCalls } from './background';
-import { generateArtifactsPrompt, generateWidgetsPrompt } from '~/prompts';
+import { generateArtifactsPrompt, generateWidgetsPrompt, generateGeogebraPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
 
@@ -2015,6 +2015,18 @@ export async function initializeAgent(
   appendAdditionalInstructions(
     agent,
     generateWidgetsPrompt(appConfig?.interfaceConfig?.widgets !== false),
+  );
+
+  /**
+   * Opt-in, and read the same way: the operator's `interface.geogebraOrigin` is
+   * both the switch and the address the client loads the figure frame from. No
+   * origin, no directive — the frame needs `allow-same-origin`, which is only
+   * safe on an origin of its own, so an unconfigured deployment cannot render a
+   * figure and must not be told it can.
+   */
+  appendAdditionalInstructions(
+    agent,
+    generateGeogebraPrompt(appConfig?.interfaceConfig?.geogebraOrigin),
   );
 
   let skillCount = 0;

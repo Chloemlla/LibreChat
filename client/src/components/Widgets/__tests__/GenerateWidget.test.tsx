@@ -1,9 +1,9 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { render, screen, fireEvent, act } from 'test/layout-test-utils';
+import Markdown from '../../Chat/Messages/Content/Markdown';
 import { MessageContext } from '~/Providers';
 import { WIDGET_DARK_CLASS } from '../frame';
-import Markdown from '../Markdown';
 
 let mockEndpoints: Record<string, { userProvide: boolean }> | undefined;
 let mockModels: Record<string, string[]> | undefined;

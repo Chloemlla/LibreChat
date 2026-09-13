@@ -1,4 +1,8 @@
-import { EModelEndpoint } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  WIDGET_COMPILE_TIMEOUT_DEFAULT_MS,
+  WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS,
+} from 'librechat-data-provider';
 import { Providers, initializeModel } from '@librechat/agents';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ClientOptions } from '@librechat/agents';
@@ -18,10 +22,44 @@ import { omitTitleOptions } from '~/agents/client';
 export const WIDGET_MAX_OUTPUT_TOKENS = 8_192;
 
 /**
- * Hard bound on the compile call. A hung provider has to surface as a card
- * error rather than a request that never returns.
+ * Default budget for the compile call. A hung provider has to surface as a card
+ * error rather than a request that never returns, so the call always runs under
+ * a bounded signal: `interface.widgetCompileTimeoutMs` moves the budget within
+ * the protocol ceiling, and `timeoutMs` moves it for a single caller.
  */
-export const WIDGET_COMPILE_TIMEOUT_MS = 60_000;
+export const WIDGET_COMPILE_TIMEOUT_MS = WIDGET_COMPILE_TIMEOUT_DEFAULT_MS;
+
+export interface ResolveWidgetCompileTimeoutParams {
+  /** Explicit budget for one call; wins over the configured one. */
+  timeoutMs?: number;
+  /** `interface.widgetCompileTimeoutMs` as loaded into the app config. */
+  configuredMs?: number;
+}
+
+/**
+ * Resolves the compile budget by priority: the caller's explicit value, then the
+ * operator's `interface.widgetCompileTimeoutMs`, then the default. A delay
+ * `AbortSignal.timeout` cannot take is replaced instead of passed through — a
+ * non-finite or non-positive one throws a RangeError, and one past the 32-bit
+ * timer ceiling fires on the next tick instead of after the requested time, which
+ * would turn a mistyped config into a compile that never runs.
+ */
+export function resolveWidgetCompileTimeoutMs({
+  timeoutMs,
+  configuredMs,
+}: ResolveWidgetCompileTimeoutParams): number {
+  const requestedMs = timeoutMs ?? configuredMs;
+  if (requestedMs == null || !Number.isFinite(requestedMs)) {
+    return WIDGET_COMPILE_TIMEOUT_MS;
+  }
+  /** Floored before the sign is judged, so a sub-millisecond value falls back
+   *  instead of rounding down to a delay that aborts immediately. */
+  const roundedMs = Math.floor(requestedMs);
+  if (roundedMs <= 0) {
+    return WIDGET_COMPILE_TIMEOUT_MS;
+  }
+  return Math.min(roundedMs, WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS);
+}
 
 /** Azure resolution reads an instance name that only some configs carry. */
 type MaybeAzureConfig = ClientOptions & {
@@ -107,7 +145,7 @@ export interface ResolveWidgetCompileModelParams {
 
 export interface GenerateWidgetCodeParams extends ResolveWidgetCompileModelParams {
   spec: string;
-  /** Overrides the bounded compile timeout; the abort path is exercised with it. */
+  /** Overrides the configured timeout for one call; the abort path is exercised with it. */
   timeoutMs?: number;
 }
 
@@ -209,8 +247,15 @@ export async function generateWidgetCode({
   model,
   spec,
   db,
-  timeoutMs = WIDGET_COMPILE_TIMEOUT_MS,
+  timeoutMs,
 }: GenerateWidgetCodeParams): Promise<string> {
+  /** The operator's budget rides on the loaded app config — the same object the
+   *  widget directive is gated on — so no caller has to thread it through. */
+  const appConfig = req.config as AppConfig | undefined;
+  const compileTimeoutMs = resolveWidgetCompileTimeoutMs({
+    timeoutMs,
+    configuredMs: appConfig?.interfaceConfig?.widgetCompileTimeoutMs,
+  });
   const { provider, clientOptions } = await resolveWidgetCompileModel({
     req,
     endpoint,
@@ -221,7 +266,7 @@ export async function generateWidgetCode({
     provider,
     clientOptions: { ...clientOptions, streaming: false } as ClientOptions,
   });
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.timeout(compileTimeoutMs);
   const response = await (client as WidgetInvokableClient).invoke(
     generateWidgetCodegenPrompt(spec),
     { signal },

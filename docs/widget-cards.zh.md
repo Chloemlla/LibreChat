@@ -4,6 +4,8 @@
 
 模型的一次回复可以不返回散文，而返回一张**交互式卡片**：一张能点的坐标图、一个带滑块的仿真、一个小表单。这套机制与托管式助手平台的两层设计一致 —— 模型产出的是**规格说明（specification）**，再由一个独立的编译步骤把规格变成浏览器能跑的组件。
 
+还有第二类卡片，它只在配置了某个 origin 之后才存在：模型发的是 **GeoGebra 命令**，图形交给一个自托管的 GeoGebra 小程序去画，跑在属于它自己的 origin 上的独立 frame 里。见 [GeoGebra 图卡](#geogebra-图卡)。
+
 ## 两层结构
 
 **1. 协议层（提示词预注入）。** 每一轮 agent 调用都携带一段指令，告诉模型标签格式、JSON 结构，以及什么情况下值得发一张卡片。该指令在 `packages/api/src/agents/initialize.ts` 中追加到 agent 的 `additional_instructions`，就放在既有 artifacts 指令旁边，因此对每个 endpoint、每个运行时 agent 都生效。功能关闭时它是 `null`，所以关掉的部署不会发送任何东西。
@@ -132,6 +134,66 @@ frame **不会**继承宿主的主题：iframe 内的 `prefers-color-scheme` 跟
 
 宿主只接受来自自身 iframe 的 `contentWindow` 的消息；frame 侧除 `*` 之外不信任宿主的 origin 字符串（它处在不透明源中，也不会收到任何机密）。
 
+## GeoGebra 图卡
+
+第二类卡片返回的不是 React 规格，而是一段 **GeoGebra 作图**。模型直接写 GeoGebra 自己的命令，客户端把命令交给一个自托管的 GeoGebra 小程序，跑在它自己 origin 上的独立 frame 里。用户得到的是一张活的小程序 —— 能操作、能读数 —— 而不是一张画出来的图。
+
+两类卡片共用标签机制、空行规则和消息通道；它们**不共用沙盒**，而这个差别正是图卡必须显式开启的原因。
+
+### 报文格式
+
+````text
+<GenerateGGB height="480px">
+A=(1,2)
+f(x)=x^2
+Circle(A,3)
+</GenerateGGB>
+````
+
+- **一行一条 GeoGebra 命令**，语法就是 GeoGebra 输入框接受的那种。块体是一份命令列表，不是 JSON：没有花括号、没有键，也没有描述这张图的散文。
+- **块内不能有空行** —— 规则和原因都与第一类卡片相同。Markdown 以空行结束原始 HTML 块；块里出现空行会把标签和它的命令切断。
+- `height` 只是建议值，与第一类卡片一样：图卡自身默认 320px，并被夹到 120–1200 之间。
+- 指令要求模型把一张图控制在 40 条命令左右。客户端最多保留前 200 条，并丢弃任何超过 500 个字符的单条命令；只要有丢弃就会给出警告 —— 失控的生成会**看得见地**退化成一张不完整的图，而不是卡死 frame。
+- 命令按顺序经 GeoGebra 的 `evalCommand` 执行，所以名字必须先定义后使用；applet 不认识的命令就是什么都不画。命令名在任何语言下都保持英文，跟着对话语言走的只有模型自己起的标签。
+- 只有部署配置了 origin，`GenerateGGB` 才会被识别；否则标签保持为普通文本，和未配对的 widget 标签完全一样。
+
+### 为什么这个 frame 必须有独立 origin
+
+widget frame 是 `sandbox="allow-scripts"`，跑在不透明源里 —— 对**模型生成的 React 代码**来说这是正确的沙盒：里面的东西按定义就不可信。
+
+图卡 frame 里跑的是**本部署自己托管的 bundle**，模型只提供命令字符串。但它仍然用不了不透明源：GeoGebra 的 GWT 引导（`web3d.nocache.js`）会把模块装进一个隐藏的**同源子 frame**，而在不透明源下访问那个子 frame 的 `document` 会抛 `SecurityError`，applet 根本起不来。所以这个 frame 是 `sandbox="allow-scripts allow-same-origin"`。
+
+对一份与应用同源的文档来说，这一对权限等于没有沙盒：frame 能读到 `parent.document.title` 和 `parent.document.cookie`。解法不是把沙盒改松，而是**把 frame 挪到别的地方**：改从 `https://ggb.example.com` 提供之后，真正的同源策略开始生效，applet 伸向应用 DOM 与 cookie 的尝试会以 `SecurityError: Blocked a cross-origin frame` 失败，而 GeoGebra 自身照常工作。
+
+**不要把 `allow-same-origin` 抄到 widget frame 上。** 那里的代码由模型输出生成，这个权限等于把应用整个交给它。
+
+### 配置
+
+```yaml
+interface:
+  geogebraOrigin: 'https://ggb.example.com'
+```
+
+- Schema：`packages/data-provider/src/config.ts` 里的 `geogebraOriginSchema`。可选，且**刻意不给默认值**。
+- **不配置就等于没有这个能力。** 服务端不注入指令（origin 未配置时 `generateGeogebraPrompt` 返回 `null`），客户端也不注册渲染器。没有第二个开关：origin 本身就是开关。
+- 取值必须是 http(s) 的 **origin**：不能带路径、查询串、fragment 或凭据。客户端用它拼 frame 的 `src`，也用它给发进 frame 的消息定址；别的形态要么把 frame 放到运维没打算放的地方，要么让 runtime 的 URL 拼不出来。非 http 协议同理拒绝。结尾的斜杠会被接受并剥掉，因为客户端会在这个值后面拼固定路径。
+- 允许 `http://`，不是只准 `https://`。这里的安全属性是 origin 隔离，不是传输加密，而 `http://localhost:3099` 正是本地联调 runtime 的常规做法。
+- `loadDefaultInterface`（`packages/data-schemas/src/app/interface.ts`）会像其他键一样把它拷进加载后的 interface 配置；未配置时 `removeNullishValues` 会把键丢掉，于是「没有值」保持为没有值，而不会变成一个空字符串。
+
+### 部署侧要做什么
+
+applet 不从 GeoGebra 的 CDN 加载任何东西 —— frame 自身的 meta CSP 是 `default-src 'none'`，脚本只允许来自它所托管的那个 origin —— 所以 runtime 在构建期拉取、自托管：
+
+1. **构建客户端。** `client/scripts/ggb/fetch.mjs` 下载固定版本的 GeoGebra math-apps 包（`geogebra-math-apps-bundle-5-4-929-3.zip`，约 33 MB），只铺开文档用到的部分 —— `deployggb.js`、`HTML5/5.0/web3d/`、`HTML5/5.0/css/` —— 放进 `client/public/geogebra/`。`HTML5/5.0/web3d/` 这层目录深度是**关键**：`deployggb.js` 从路径推导模块名，所以这棵树必须按原样提供。语言文件裁剪到只留 `en` 与 `zh-CN`。它挂在客户端的 `prebuild` 上，所以构建不可能漏掉 runtime 还悄悄成功：下载失败会直接让构建失败，而不是产出一个到处 404 的 runtime。`SKIP_GGB_FETCH=1` 可显式跳过；拉下来的这棵树已在 gitignore 里。
+2. **拷进 `dist/`。** `client/vite.config.ts` 里的 `copyPublicAssets` 插件把 `client/public/ggb-runtime.html` 和 `client/public/geogebra/` 复制进 `client/dist/`（生产构建设了 `publicDir: false`，`public/` 下的东西不会被自动拷贝）。
+3. **在那台子域名的根路径上提供这两个路径** —— `ggb-runtime.html` 与 `geogebra/…` —— 让 `https://ggb.example.com/ggb-runtime.html` 和 `https://ggb.example.com/geogebra/…` 都能解析。这一步才是沙盒成立的前提：浏览器必须看到两个不同的 origin。它只是一次静态文件拷贝 —— 不需要服务端渲染、不需要 API、不需要反代，也不需要本仓应用 origin 上的任何东西。
+4. **把 `interface.geogebraOrigin` 指向这个 origin**，不带路径。
+5. **若开了 `CSP_ENABLED`、而该 origin 是明文 `http://`**，应用的 `frame-src` 必须放行它：默认策略是 `'self' https: blob: data: about:`，能覆盖任何 `https:` 的图卡 origin，却会拦掉 `http://localhost:…`。用 `CSP_FRAME_SRC_EXTRA`（按指令粒度的环境变量覆盖）加上去，而不是放宽默认值。CSP 默认关闭，所以本地开发不受影响。这个失败模式值得先知道：被拦下的 frame 根本不会启动，`ggb:ready` 永不到达，卡片就一直停在加载态，界面上没有任何地方说明原因。
+
+### 命令是不可信输入
+
+标签块里的内容全是模型输出，因此在每一跳都按不可信输入对待：服务端既不解析也不执行它；frame 内每一行都交给 GeoGebra 的命令解释器 `evalCommand`，绝不交给 `eval`、`Function` 或 script 标签。frame 的 meta CSP 里是 `connect-src 'none'`，所以哪怕某条命令能被诱导去外发，构造也发不出任何东西。
+
 ## 文件清单
 
 新增：
@@ -146,23 +208,30 @@ frame **不会**继承宿主的主题：iframe 内的 `prefers-color-scheme` 跟
 | `api/server/routes/widgets.js` | 路由接线（鉴权、限流） |
 | `client/src/components/Widgets/plugin.ts` | remark 插件：标签 → 节点 |
 | `client/src/components/Widgets/GenerateWidget.tsx` | 卡片组件及其各状态 |
+| `client/src/components/Widgets/GenerateGGB.tsx` | 图卡组件及其各状态 |
+| `client/src/components/Widgets/Tag.tsx` | 卡片开关关闭时回退显示的标签原文 |
 | `client/src/components/Widgets/frame.ts` | iframe 属性、runtime URL、宿主侧消息 reducer |
 | `client/public/widget-runtime.html` | 沙盒文档 |
+| `client/scripts/ggb/fetch.mjs` | 构建期拉取、铺开并裁剪 GeoGebra bundle |
+| `client/public/ggb-runtime.html` | 图卡 frame 文档 |
+| `client/public/geogebra/` | 自托管的 GeoGebra runtime —— 由上面的脚本生成，不是源码 |
 
 修改：
 
 | 路径 | 改动 |
 |---|---|
-| `packages/api/src/agents/initialize.ts` | 在 artifacts 块之后追加上该指令 |
-| `packages/data-provider/src/config.ts` | `interface.widgets` schema 字段 + 默认值 |
-| `packages/data-schemas/src/app/interface.ts` | 把 `widgets` 拷进加载后的 interface 配置 |
+| `packages/api/src/agents/initialize.ts` | 在 artifacts 块之后追加指令 |
+| `packages/api/src/prompts/widgets/index.ts` | GeoGebra 指令构造器 |
+| `packages/data-provider/src/config.ts` | `interface.widgets` schema 字段 + 默认值；`interface.geogebraOrigin`，可选且无默认值 |
+| `packages/data-schemas/src/app/interface.ts` | 把 `widgets` 与 `geogebraOrigin` 拷进加载后的 interface 配置 |
 | `packages/data-provider/src/api-endpoints.ts`、`data-service.ts`、`keys.ts` | endpoint、调用方、mutation key |
 | `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse` |
 | `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation` |
 | `api/server/routes/index.js`、`api/server/index.js` | 注册并挂载路由 |
 | `api/server/middleware/validateModel.js` | 两个守卫改为建立在共用规则之上，并导出 JSON 形态 |
-| `client/src/components/Chat/Messages/Content/markdownConfig.ts` | 注册插件与组件 |
-| `client/vite.config.ts` | 把 `widget-runtime.html` 复制进 `dist/` |
+| `client/src/components/Chat/Messages/Content/markdownConfig.ts` | 注册两套插件与两个组件 |
+| `client/src/components/Widgets/index.ts` | 把图卡组件与 widget 组件一起导出 |
+| `client/vite.config.ts` | 把 `widget-runtime.html`、`ggb-runtime.html` 与 `geogebra/` 复制进 `dist/` |
 | `client/src/locales/en/translation.json` | 卡片文案 |
 | `librechat.example.yaml` | 记录该键 |
 
@@ -174,6 +243,6 @@ frame **不会**继承宿主的主题：iframe 内的 `prefers-color-scheme` 跟
 
 ## 验证
 
-- 后端：指令构造器（开/关）、代码校验器、共用的模型访问规则、handler 的授权与错误路径各自的单元测试。
+- 后端：指令构造器的单元测试（widget 开/关；GeoGebra 配置了 origin 与没配两种情况）、代码校验器、共用的模型访问规则、handler 的授权与错误路径。
 - 前端：一条携带完整标签的消息、一个仍在流式输出中的标签、一个 JSON 体损坏的标签，各自的渲染测试；外加消息协议 reducer 的单元测试。
 - 本仓以 CI 为唯一的构建与测试权威；本地不做任何构建。

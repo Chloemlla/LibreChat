@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS } from 'librechat-data-provider';
 import type { ServerRequest, EndpointDbMethods } from '~/types';
 
 const mockInvoke = jest.fn();
@@ -24,6 +25,7 @@ import {
   WIDGET_MAX_OUTPUT_TOKENS,
   generateWidgetCode,
   resolveWidgetCompileModel,
+  resolveWidgetCompileTimeoutMs,
 } from './generate';
 
 const SPEC = '**Objective:** plot the series\n**Data State:** 1, 2, 3';
@@ -34,6 +36,16 @@ const createRequest = (): ServerRequest =>
     query: {},
     body: {},
     config: {},
+    user: { id: 'user-id', role: 'USER', tenantId: 'tenant-a' },
+  }) as ServerRequest;
+
+/** Same shape as `createRequest`, with the operator's compile budget loaded the
+ *  way `loadDefaultInterface` loads it into the app config. */
+const createConfiguredRequest = (widgetCompileTimeoutMs: number): ServerRequest =>
+  ({
+    query: {},
+    body: {},
+    config: { interfaceConfig: { widgetCompileTimeoutMs } },
     user: { id: 'user-id', role: 'USER', tenantId: 'tenant-a' },
   }) as ServerRequest;
 
@@ -102,6 +114,25 @@ describe('generateWidgetCode', () => {
 
     await expect(
       generateWidgetCode({ ...baseParams('gpt-4o-mini'), spec: SPEC, timeoutMs: 5 }),
+    ).rejects.toBeInstanceOf(DOMException);
+  });
+
+  /** The configured budget has to reach the signal: under the 60-second default
+   *  this call would still be pending, so a rejection proves the config was read. */
+  it('aborts on the configured compile timeout', async () => {
+    mockInvoke.mockImplementation(
+      (_input: string, config: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          config.signal.addEventListener('abort', () => reject(config.signal.reason));
+        }),
+    );
+
+    await expect(
+      generateWidgetCode({
+        ...baseParams('gpt-4o-mini'),
+        req: createConfiguredRequest(5),
+        spec: SPEC,
+      }),
     ).rejects.toBeInstanceOf(DOMException);
   });
 
@@ -219,5 +250,49 @@ describe('resolveWidgetCompileModel', () => {
     expect(Number.isFinite(WIDGET_COMPILE_TIMEOUT_MS)).toBe(true);
     expect(WIDGET_COMPILE_TIMEOUT_MS).toBeGreaterThan(0);
     expect(WIDGET_COMPILE_TIMEOUT_MS).toBeLessThanOrEqual(120_000);
+    /** The default has to be a value the operator surface itself accepts, or the
+     *  clamp would rewrite the budget of a deployment that never configured one. */
+    expect(WIDGET_COMPILE_TIMEOUT_MS).toBeLessThanOrEqual(WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS);
+  });
+});
+
+describe('resolveWidgetCompileTimeoutMs', () => {
+  it('prefers the caller override over the configured budget', () => {
+    expect(resolveWidgetCompileTimeoutMs({ timeoutMs: 1_000, configuredMs: 90_000 })).toBe(1_000);
+  });
+
+  it('uses the configured budget when the caller passes none', () => {
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: 90_000 })).toBe(90_000);
+  });
+
+  it('falls back to the default when no budget is configured', () => {
+    expect(resolveWidgetCompileTimeoutMs({})).toBe(WIDGET_COMPILE_TIMEOUT_MS);
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: undefined })).toBe(
+      WIDGET_COMPILE_TIMEOUT_MS,
+    );
+  });
+
+  /** `AbortSignal.timeout` throws a RangeError on a delay that is not a
+   *  non-negative finite number, and a sub-millisecond budget would round down to
+   *  a delay that aborts immediately, so neither may be passed through. */
+  it('falls back to the default for a delay the signal cannot take', () => {
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: NaN })).toBe(WIDGET_COMPILE_TIMEOUT_MS);
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: Infinity })).toBe(
+      WIDGET_COMPILE_TIMEOUT_MS,
+    );
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: 0 })).toBe(WIDGET_COMPILE_TIMEOUT_MS);
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: -1 })).toBe(WIDGET_COMPILE_TIMEOUT_MS);
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: 0.5 })).toBe(WIDGET_COMPILE_TIMEOUT_MS);
+  });
+
+  /** Past the 32-bit timer ceiling the signal aborts on the next tick instead of
+   *  after the requested delay, so the ceiling is enforced rather than trusted. */
+  it('clamps a configured budget above the protocol ceiling', () => {
+    expect(resolveWidgetCompileTimeoutMs({ configuredMs: 10 ** 12 })).toBe(
+      WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS,
+    );
+    expect(
+      resolveWidgetCompileTimeoutMs({ configuredMs: WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS + 1 }),
+    ).toBe(WIDGET_COMPILE_TIMEOUT_HARD_MAX_MS);
   });
 });

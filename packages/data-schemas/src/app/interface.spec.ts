@@ -235,4 +235,28 @@ describe('loadDefaultInterface', () => {
 
     expect(interfaceConfig).not.toHaveProperty('defaultPinnedTools');
   });
+
+  it('passes through a configured widget compile timeout', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        widgetCompileTimeoutMs: 90_000,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.widgetCompileTimeoutMs).toBe(90_000);
+  });
+
+  it('omits the widget compile timeout when not explicitly configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig).not.toHaveProperty('widgetCompileTimeoutMs');
+  });
 });

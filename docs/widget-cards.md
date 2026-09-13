@@ -7,6 +7,10 @@ a simulation with sliders, a small form. The mechanism mirrors the two-layer des
 assistant platforms — the model emits a *specification*, and a separate compile step turns that
 specification into a component the browser can run.
 
+A second kind of card is gated on a configured origin: there the model emits **GeoGebra commands**
+and the figure goes to a self-hosted GeoGebra applet running in its own frame on its own origin.
+See [GeoGebra figure cards](#geogebra-figure-cards).
+
 ## Two layers
 
 **1. Protocol layer (prompt pre-injection).** Every agent turn carries a directive that tells the
@@ -207,6 +211,123 @@ follows either theme.
 The host accepts a message only from its own iframe's `contentWindow`, and the frame never trusts the
 host's origin string beyond `*` (it has an opaque origin and receives no secrets).
 
+## GeoGebra figure cards
+
+A second card kind hands back a **GeoGebra construction** instead of a React specification. The
+model writes GeoGebra's own commands; the client passes them to a self-hosted GeoGebra applet
+running in a frame of its own. The user gets a live applet — a figure they can manipulate and read
+values off — rather than a drawing of one.
+
+The two kinds share the tag mechanism, the blank-line rule and the message plumbing. They do **not**
+share a sandbox, and that difference is the whole reason this one is opt-in.
+
+### Wire format
+
+````text
+<GenerateGGB height="480px">
+A=(1,2)
+f(x)=x^2
+Circle(A,3)
+</GenerateGGB>
+````
+
+- **One GeoGebra command per line**, in the syntax the GeoGebra input bar accepts. The body is a
+  command list, not JSON: no braces, no keys, no prose describing the figure.
+- **No blank line inside the block** — the same rule and the same reason as the widget card.
+  Markdown ends a raw HTML block at a blank line, and one inside splits the tag from its commands.
+- `height` is advisory, as it is for a widget: the card's own default is 320px, clamped to 120–1200.
+- The directive asks the model to keep a figure at roughly 40 commands. The client keeps the first
+  200 and drops any single command longer than 500 characters, and it shows a warning whenever it
+  drops anything — a runaway generation degrades into a partial figure, visibly, instead of a hung
+  frame.
+- Commands run in order through GeoGebra's `evalCommand`, so a name must be defined before it is
+  used, and a command the applet does not recognize simply draws nothing. Command names stay English
+  in every language; only the labels the model chooses follow the conversation.
+- `GenerateGGB` is recognized only when the deployment configured an origin. Otherwise the tag stays
+  literal text, exactly like an unpaired widget tag.
+
+### Why this frame needs an origin of its own
+
+The widget frame is `sandbox="allow-scripts"` and runs in an opaque origin, which is the right
+sandbox for **model-written React code** — the thing inside it is untrusted by construction.
+
+The figure frame runs **a bundle this deployment hosts**, and the model supplies only command
+strings. It still cannot use the opaque origin, because GeoGebra's GWT bootstrap
+(`web3d.nocache.js`) loads the module into a hidden **same-origin child frame**: under an opaque
+origin, touching that child's `document` throws `SecurityError` and the applet never starts. The
+frame is therefore `sandbox="allow-scripts allow-same-origin"`.
+
+For a document on the application's own origin, that pair is equivalent to no sandbox at all: the
+frame can read `parent.document.title` and `parent.document.cookie`. The fix is not a weaker sandbox
+but a **different origin** — served from `https://ggb.example.com`, the real same-origin policy
+applies, the applet's attempts to reach the application's DOM or cookies fail with
+`SecurityError: Blocked a cross-origin frame`, and GeoGebra itself works normally.
+
+**Do not copy `allow-same-origin` onto the widget frame.** There the code inside is generated from
+model output, and that permission would hand it the application.
+
+### Configuration
+
+```yaml
+interface:
+  geogebraOrigin: 'https://ggb.example.com'
+```
+
+- Schema: `geogebraOriginSchema` in `packages/data-provider/src/config.ts`. Optional, and
+  deliberately **without a default**.
+- **Unset means the feature does not exist.** The server injects no directive
+  (`generateGeogebraPrompt` returns `null` for an unset origin) and the client registers no renderer.
+  There is no second flag: the origin *is* the switch.
+- The value is held to an http(s) **origin**: no path, query, fragment or credentials. It is what
+  the client builds the frame's `src` from and what it addresses the frame's messages to, so
+  anything else would either put the frame somewhere other than the operator intends or leave the
+  runtime URL unbuildable. A non-http scheme is refused for the same reason. A trailing slash is
+  accepted and stripped, since the client appends a fixed path to the value.
+- `http://` is allowed, not only `https://`. The security property here is the origin split, not
+  transport, and a local `http://localhost:3099` is the ordinary way to develop against the runtime.
+- `loadDefaultInterface` (`packages/data-schemas/src/app/interface.ts`) copies it into the loaded
+  interface config like the other keys; `removeNullishValues` drops it when unset, so an absent
+  value stays absent rather than becoming an empty string.
+
+### What the deployment has to serve
+
+The applet loads nothing from GeoGebra's CDN — the frame's own meta CSP is `default-src 'none'` with
+scripts allowed only from the origin it is served on — so the runtime is fetched at build time and
+self-hosted:
+
+1. **Build the client.** `client/scripts/ggb/fetch.mjs` downloads the pinned GeoGebra math-apps
+   bundle (`geogebra-math-apps-bundle-5-4-929-3.zip`, ~33 MB) and lays out only the parts the
+   document loads — `deployggb.js`, `HTML5/5.0/web3d/`, `HTML5/5.0/css/` — under
+   `client/public/geogebra/`. The `HTML5/5.0/web3d/` depth is load-bearing: `deployggb.js` derives
+   the module name from the path, so the tree must be served as extracted. Language files are pruned
+   to `en` and `zh-CN`. It is wired as the client's `prebuild` step, so a build cannot silently ship
+   without the runtime: a failed download stops the build rather than producing a runtime full of
+   404s. `SKIP_GGB_FETCH=1` opts out explicitly, and the fetched tree is gitignored.
+2. **Copy into `dist/`.** The `copyPublicAssets` plugin in `client/vite.config.ts` copies
+   `client/public/ggb-runtime.html` and `client/public/geogebra/` into `client/dist/` (production
+   builds set `publicDir: false`, so nothing under `public/` is copied automatically).
+3. **Serve those two paths at the root of the separate origin** — `ggb-runtime.html` and
+   `geogebra/…` — so that `https://ggb.example.com/ggb-runtime.html` and
+   `https://ggb.example.com/geogebra/…` resolve. This is the step that makes the sandbox work: the
+   browser has to see two different origins. It is a static file copy — no server-side rendering, no
+   API, no proxy, and nothing from this repository's application origin.
+4. **Point `interface.geogebraOrigin` at that origin**, with no path.
+5. **If `CSP_ENABLED` is on and the origin is plain `http://`**, the application's `frame-src` must
+   admit it: the default policy is `'self' https: blob: data: about:`, which covers any `https:`
+   figure origin but blocks an `http://localhost:…` one. Add it through `CSP_FRAME_SRC_EXTRA` (a
+   per-directive env override) rather than widening the default. CSP is off unless enabled, so
+   development is unaffected by default. The failure mode is worth knowing: a blocked frame never
+   boots, so `ggb:ready` never arrives and the card simply stays in its loading state, with nothing
+   in the UI to say why.
+
+### Commands are untrusted input
+
+Everything in the tag body is model output, so it is treated as untrusted input at every hop:
+the server never parses or executes it, and inside the frame each line goes to GeoGebra's
+`evalCommand` — the command interpreter — and never to `eval`, `Function` or a script tag. The
+frame's meta CSP leaves `connect-src 'none'`, so a construction cannot post the conversation
+anywhere even if a command could be made to try.
+
 ## Files
 
 New:
@@ -221,23 +342,30 @@ New:
 | `api/server/routes/widgets.js` | route wiring (auth, limiter) |
 | `client/src/components/Widgets/plugin.ts` | remark plugin: tag → node |
 | `client/src/components/Widgets/GenerateWidget.tsx` | card component and its states |
+| `client/src/components/Widgets/GenerateGGB.tsx` | figure card component and its states |
+| `client/src/components/Widgets/Tag.tsx` | the literal tag text a card falls back to when its switch is off |
 | `client/src/components/Widgets/frame.ts` | iframe props, runtime URL, host-side message reducer |
 | `client/public/widget-runtime.html` | the sandbox document |
+| `client/scripts/ggb/fetch.mjs` | build-time fetch, layout and language pruning of the GeoGebra bundle |
+| `client/public/ggb-runtime.html` | the GeoGebra frame document |
+| `client/public/geogebra/` | the self-hosted GeoGebra runtime — generated by the fetch script, not source |
 
 Edited:
 
 | Path | Change |
 |---|---|
 | `packages/api/src/agents/initialize.ts` | append the directive after the artifacts block |
-| `packages/data-provider/src/config.ts` | `interface.widgets` schema field + default |
-| `packages/data-schemas/src/app/interface.ts` | copy `widgets` into the loaded interface config |
+| `packages/api/src/prompts/widgets/index.ts` | the GeoGebra directive builder |
+| `packages/data-provider/src/config.ts` | `interface.widgets` schema field + default; `interface.geogebraOrigin`, optional and without a default |
+| `packages/data-schemas/src/app/interface.ts` | copy `widgets` and `geogebraOrigin` into the loaded interface config |
 | `packages/data-provider/src/api-endpoints.ts`, `data-service.ts`, `keys.ts` | endpoint, caller, mutation key |
 | `packages/data-provider/src/types.ts` | `TWidgetGenerateRequest` / `TWidgetGenerateResponse` |
 | `packages/data-provider/src/react-query/react-query-service.ts` | `useGenerateWidgetMutation` |
 | `api/server/routes/index.js`, `api/server/index.js` | register and mount the route |
 | `api/server/middleware/validateModel.js` | build both guards on the shared rule, and expose the JSON shape |
-| `client/src/components/Chat/Messages/Content/markdownConfig.ts` | register plugin and component |
-| `client/vite.config.ts` | copy `widget-runtime.html` into `dist/` |
+| `client/src/components/Chat/Messages/Content/markdownConfig.ts` | register both plugins and both components |
+| `client/src/components/Widgets/index.ts` | export the figure card alongside the widget card |
+| `client/vite.config.ts` | copy `widget-runtime.html`, `ggb-runtime.html` and `geogebra/` into `dist/` |
 | `client/src/locales/en/translation.json` | card strings |
 | `librechat.example.yaml` | document the key |
 
@@ -250,7 +378,8 @@ Edited:
 
 ## Verification
 
-- Backend: unit specs for the directive builder (on/off), the code validator, the shared model-access
+- Backend: unit specs for the directive builders (widget on/off; GeoGebra with and without an
+  origin), the code validator, the shared model-access
   rule, and the handler's authorization and error paths.
 - Frontend: a render test for a message carrying a complete tag, a tag still streaming, and a tag with
   a malformed body; a unit test for the message-protocol reducer.

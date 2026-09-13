@@ -61,6 +61,14 @@ export async function loadDefaultInterface({
     fileSearch: interfaceConfig?.fileSearch,
     fileCitations: interfaceConfig?.fileCitations,
     widgets: interfaceConfig?.widgets ?? defaults.widgets,
+    /** Optional and without a default, so an unset value stays absent here too and
+     *  the compile path keeps its own default budget instead of a second copy that
+     *  could drift from `WIDGET_COMPILE_TIMEOUT_DEFAULT_MS`. */
+    widgetCompileTimeoutMs: interfaceConfig?.widgetCompileTimeoutMs,
+    /** Optional and without a default, so an unset value stays absent here too
+     *  (`removeNullishValues` drops the key) and both sides read it as "no figure
+     *  renderer" rather than as an empty origin. */
+    geogebraOrigin: interfaceConfig?.geogebraOrigin,
     defaultPinnedTools: interfaceConfig?.defaultPinnedTools,
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,

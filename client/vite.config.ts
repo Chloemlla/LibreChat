@@ -116,6 +116,10 @@ export default defineConfig(({ command }) => ({
           'assets/rum.*.js',
           'assets/locale-*.js',
           'assets/query-devtools*.js',
+          /** The self-hosted GeoGebra runtime is ~27 MB across hundreds of js/css/html
+           *  files that only the sandbox frame ever loads. Precaching it would make every
+           *  service-worker install pull the whole thing; it stays network-fetched. */
+          'geogebra/**/*',
         ],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         /**
@@ -461,8 +465,10 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
 /**
  * Production builds set `publicDir: false`, so nothing under public/ reaches dist on its
  * own. This copies what the server actually has to serve: all of public/assets (the PWA
- * icons plus the endpoint, tool and language logos referenced at runtime), robots.txt, and
- * widget-runtime.html (the static sandbox document the interactive-card iframe loads).
+ * icons plus the endpoint, tool and language logos referenced at runtime), robots.txt,
+ * widget-runtime.html and ggb-runtime.html (the static sandbox documents the
+ * interactive-card iframes load), and public/geogebra (the self-hosted GeoGebra runtime
+ * the second of those fetches from).
  * public/fonts is deliberately left out, since fonts are emitted as bundle assets through
  * the `$fonts` alias.
  *
@@ -494,6 +500,20 @@ export function copyPublicAssets(): Plugin {
         path.join(publicDir, 'widget-runtime.html'),
         path.join(outDir, 'widget-runtime.html'),
       );
+      await fs.promises.copyFile(
+        path.join(publicDir, 'ggb-runtime.html'),
+        path.join(outDir, 'ggb-runtime.html'),
+      );
+      /** Only `npm run build` fetches this (the `prebuild` script); the `build:ci` and
+       *  `build:dev` modes never did, so their absence is reported rather than fatal. */
+      const geogebra = path.join(publicDir, 'geogebra');
+      if (fs.existsSync(geogebra)) {
+        await fs.promises.cp(geogebra, path.join(outDir, 'geogebra'), { recursive: true });
+      } else {
+        this.warn(
+          'public/geogebra is missing; run `node scripts/ggb/fetch.mjs` to self-host the GeoGebra runtime',
+        );
+      }
     },
   };
 }

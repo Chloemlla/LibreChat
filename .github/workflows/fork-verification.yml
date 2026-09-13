@@ -34,6 +34,12 @@ jobs:
           cache: npm
       - run: npm ci --no-audit
       - name: Build all workspaces and frontend
+        env:
+          # `npm run frontend` reaches client's `prebuild`, which downloads the 33 MB
+          # GeoGebra bundle from a third-party CDN. This job checks that the tree
+          # compiles, and it should not go red because that CDN is unreachable; the
+          # fetched runtime is what the deployment build covers, and it does fetch.
+          SKIP_GGB_FETCH: '1'
         run: npm run frontend
       - name: Typecheck all TypeScript workspaces
         shell: bash
@@ -56,19 +62,42 @@ jobs:
         include:
           - workspace: api
             tests: >-
+              server/middleware/__tests__/validateModel.spec.js
               server/middleware/__tests__/validateTurnstile.test.js
               server/routes/__tests__/config.spec.js
+              server/services/Config/__tests__/EndpointService.spec.js
+              server/services/Config/__tests__/invalidateConfigCaches.spec.js
               server/services/Config/loadCustomConfig.spec.js
+              server/services/Config/loadDefaultEConfig.spec.js
+              server/services/initializeMCPs.plugins.spec.js
+              server/services/initializeMCPs.spec.js
               server/routes/oauth.test.js
+          - workspace: packages/data-provider
+            tests: src
           - workspace: packages/data-schemas
-            tests: src/app/turnstile.spec.ts src/models/oauth.spec.ts
+            tests: >-
+              src/app/interface.spec.ts
+              src/app/turnstile.spec.ts
+              src/models/oauth.spec.ts
           - workspace: packages/api
-            tests: src/oauth src/app/environment.spec.ts
+            tests: >-
+              src/admin/config.handler.spec.ts
+              src/admin/config.spec.ts
+              src/app/AppService.spec.ts
+              src/app/environment.spec.ts
+              src/endpoints/access.spec.ts
+              src/endpoints/config/endpoints.spec.ts
+              src/mcp/registry/__tests__/MCPServersRegistry.test.ts
+              src/oauth
+              src/prompts/widgets
+              src/schedules
+              src/widgets
           - workspace: client
             tests: >-
               src/components/Auth/__tests__/Registration.turnstile.test.tsx
               src/components/Audio/__tests__/VoicePreview.spec.tsx
               src/components/Chat/__tests__/Footer.spec.tsx
+              src/components/Widgets/__tests__
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

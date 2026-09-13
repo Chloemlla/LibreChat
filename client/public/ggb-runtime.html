@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      The host embeds this document as
+      <iframe sandbox="allow-scripts allow-same-origin" src="<ggb origin>/ggb-runtime.html">.
+
+      `allow-same-origin` is required, and it is what makes the separate origin load
+      bearing. GeoGebra is GWT: the bootstrap script appends a hidden child iframe on
+      this same origin and reaches into it with `a.contentWindow.document` to install
+      the compiled module. Under an opaque origin that property access throws
+      SecurityError and the applet never initializes. Keeping the same-origin bit means
+      this frame is NOT isolated from its own origin the way widget-runtime.html is, so
+      it must not be served from the application's origin — hosting it on a dedicated
+      subdomain is what stops a crafted GeoGebra command from reaching the app's DOM,
+      cookies or storage.
+
+      Everything the runtime needs is under this origin, so the policy below stays
+      closed: `'unsafe-inline'` is required because the compiled module is installed by
+      assigning `script.innerText` (the production path, i.e. GeoGebraDebug=false);
+      `connect-src 'self'` because the loader fetches `<hash>.cache.js`; `frame-src
+      'self'` for the hidden GWT bootstrap iframe; `font-src` and `img-src` allow
+      `data:` for the fonts and cursors GeoGebra inlines. A meta policy can only
+      narrow, never widen.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; frame-src 'self';"
+    />
+    <title>GeoGebra runtime</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+      /* Driven by the class the host toggles, not by the OS: `prefers-color-scheme`
+         inside a frame follows the system, which is not the app's theme. */
+      html {
+        color-scheme: light;
+      }
+      html.dark {
+        color-scheme: dark;
+      }
+      body {
+        color: CanvasText;
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      #ggb {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ggb"></div>
+    <script src="/geogebra/deployggb.js"></script>
+    <script>
+      (function () {
+        'use strict';
+
+        var MAX_MESSAGE_LENGTH = 300;
+        /* Commands are model output, so a construction can carry a string that a browser
+           would treat as markup or script if it ever reached the DOM. Nothing here does
+           that today, but the applet receives these strings verbatim, so the patterns are
+           refused before evalCommand rather than trusted. */
+        var DANGEROUS_PATTERNS = [
+          /javascript:/i,
+          /<\s*script/i,
+          /* An HTML event attribute only ever sits inside a tag, separated from the tag name
+             by whitespace, and its name comes from a fixed set — so the leading `\s` plus
+             the whitelist is what keeps a GeoGebra label such as `one=` from being read as
+             a handler. Matching bare `on\w+` would refuse that label, and a refused command
+             is reported to the user as a problem with an otherwise valid construction. */
+          /\son(?:click|dblclick|load|error|mouse\w*|key\w*|focus|blur|change|input|submit|reset|select|drag\w*|drop|touch\w*|pointer\w*|wheel|scroll|contextmenu)\s*=/i,
+          /eval\s*\(/i,
+          /* GeoGebra's Function(<expression>, <start>, <end>) is a common command spelled
+             with a capital F, while the JS keyword is conventionally lower case, so the
+             case-sensitive match separates them. The `i` flag would refuse the command and
+             warn about an otherwise valid construction. */
+          /function\s*\(/,
+        ];
+        /* Sequence/Iteration/RecursiveSequence are synchronous inside the applet and can
+           hold the main thread far past any reasonable batch; the frame shares a process
+           with the host, so a runaway construction freezes the whole application rather
+           than just the card. The clock is only read between commands, which is what
+           bounds the common case of a long batch of cheap commands. */
+        var EXECUTION_TIMEOUT = 30000;
+        var container = document.getElementById('ggb');
+        var api = null;
+        var rendered = false;
+
+        /* The frame's origin is not the host's and is not knowable from here, so the
+           host is addressed with '*'; nothing sent here is secret — it is a height, a
+           message, or a ready ping. The host validates event.origin on its side. */
+        function post(message) {
+          parent.postMessage(message, '*');
+        }
+
+        function fail(message) {
+          post({ type: 'ggb:error', message: String(message).slice(0, MAX_MESSAGE_LENGTH) });
+        }
+
+        /* A warning is not a failure: everything the applet did manage to draw stays on
+           screen, and the message says what it could not. Only the startup paths below,
+           where there is no applet at all, end the card. */
+        function warn(message) {
+          post({ type: 'ggb:warning', message: String(message).slice(0, MAX_MESSAGE_LENGTH) });
+        }
+
+        /* Class mode, because the frame has to follow the application's theme rather
+           than the OS; the host sends that flag and this sets the class. */
+        function applyTheme(dark) {
+          document.documentElement.classList.toggle('dark', dark === true);
+        }
+
+        function reportHeight() {
+          var height = Math.ceil(container.getBoundingClientRect().height);
+          if (height > 0) {
+            post({ type: 'ggb:height', height: height });
+          }
+        }
+
+        /* `//` opens a comment only outside a string literal: an odd number of quotes
+           before it means one is still open, so the line is left whole. Truncating there
+           would silently corrupt a command that merely contains a URL. */
+        function stripComment(line) {
+          var index = line.indexOf('//');
+          if (index === -1) {
+            return line;
+          }
+          var before = line.substring(0, index);
+          var singleQuotes = before.split("'").length - 1;
+          var doubleQuotes = before.split('"').length - 1;
+          if (singleQuotes % 2 === 1 || doubleQuotes % 2 === 1) {
+            return line;
+          }
+          return before;
+        }
+
+        function isDangerous(command) {
+          for (var i = 0; i < DANGEROUS_PATTERNS.length; i++) {
+            if (DANGEROUS_PATTERNS[i].test(command)) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        /* Commands a batch could not execute are collected rather than thrown away: one
+           refused command must not erase the figure the rest of the batch already drew, so
+           the batch keeps going and what it could not do is reported as a warning. The
+           card stays on screen and the user gets the part that worked. GeoGebra signals a
+           rejected command by returning false as well as by throwing, so both count. */
+        function runCommands(commands) {
+          if (!Array.isArray(commands)) {
+            return;
+          }
+          if (rendered && typeof api.newConstruction === 'function') {
+            api.newConstruction();
+          }
+          rendered = true;
+          var problems = [];
+          var startTime = Date.now();
+          for (var i = 0; i < commands.length; i++) {
+            /* An exhausted budget stops the batch instead of carrying on: the applet is
+               already wedged, so the remaining commands would only extend the freeze. What
+               timed out is still reported the same way as anything else, as a warning. */
+            var elapsedTime = Date.now() - startTime;
+            if (elapsedTime > EXECUTION_TIMEOUT) {
+              problems.push(
+                'timed out after ' + elapsedTime + 'ms (ran ' + i + '/' + commands.length + ')',
+              );
+              break;
+            }
+            if (typeof commands[i] !== 'string') {
+              continue;
+            }
+            var command = stripComment(commands[i]).trim();
+            if (command === '') {
+              continue;
+            }
+            if (isDangerous(command)) {
+              problems.push(command + ': blocked');
+              continue;
+            }
+            try {
+              if (api.evalCommand(command) === false) {
+                problems.push(command + ': rejected');
+              }
+            } catch (error) {
+              problems.push(command + ': ' + (error && error.message ? error.message : error));
+            }
+          }
+          if (problems.length > 0) {
+            warn(problems.join('; '));
+          }
+        }
+
+        window.addEventListener('message', function (event) {
+          var data = event.data;
+          if (!data || typeof data !== 'object') {
+            return;
+          }
+          if (data.type === 'ggb:theme') {
+            applyTheme(data.dark);
+            return;
+          }
+          if (data.type !== 'ggb:commands' || !api) {
+            return;
+          }
+          applyTheme(data.dark);
+          runCommands(data.commands);
+          /* The host settles the card on a height report, so it is sent after the batch
+             rather than on load: the applet has drawn by the next frame. */
+          window.requestAnimationFrame(reportHeight);
+        });
+
+        /* The applet's own layout grows the container while it boots, and the host settles
+           the card on the first height it hears, so reports start once a batch has run —
+           otherwise the card would look settled before the construction was drawn. */
+        var observer = new ResizeObserver(function () {
+          if (rendered) {
+            reportHeight();
+          }
+        });
+        observer.observe(container);
+
+        if (typeof GGBApplet === 'undefined') {
+          fail('the GeoGebra runtime failed to load');
+          return;
+        }
+
+        try {
+          var applet = new GGBApplet(
+            {
+              appName: 'geometry',
+              language: 'en',
+              showToolBar: false,
+              showMenuBar: false,
+              showAlgebraInput: false,
+              enableRightClick: false,
+              width: 800,
+              height: 520,
+              /* false leaves the applet uninitialized. */
+              useBrowserForJS: true,
+              appletOnLoad: function (instance) {
+                api = instance;
+                post({ type: 'ggb:ready' });
+              },
+            },
+            true,
+          );
+          /* There is no `codebase` parameter on GGBApplet — the offline codebase is only
+             reachable through this instance method. The trailing slash matters: the loader
+             splits the path and reads the second-to-last segment to name the module, so
+             web3d.nocache.js is only found while the three-level depth is intact. */
+          applet.setHTML5Codebase('/geogebra/HTML5/5.0/web3d/', true);
+          applet.inject('ggb');
+        } catch (error) {
+          fail(error && error.message ? error.message : error);
+        }
+      })();
+    </script>
+  </body>
+</html>

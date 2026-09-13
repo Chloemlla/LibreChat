@@ -8,11 +8,17 @@ import remarkDirective from 'remark-directive';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
 import {
+  generateWidgetPlugin,
+  GGB_NODE_TYPE,
+  GenerateGGB,
+  GenerateWidget,
+  WIDGET_NODE_TYPE,
+} from '~/components/Widgets';
+import {
   mcpUIResourcePlugin,
   MCPUIResource,
   MCPUIResourceCarousel,
 } from '~/components/MCPUIResource';
-import { generateWidgetPlugin, GenerateWidget, WIDGET_NODE_TYPE } from '~/components/Widgets';
 import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
@@ -68,4 +74,5 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   'mcp-ui-resource': MCPUIResource,
   'mcp-ui-carousel': MCPUIResourceCarousel,
   [WIDGET_NODE_TYPE]: GenerateWidget,
+  [GGB_NODE_TYPE]: GenerateGGB,
 });

@@ -16,6 +16,7 @@ import {
 } from './frame';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import { CardTagText } from './Tag';
 
 interface WidgetFailure {
   key: string;
@@ -42,11 +43,6 @@ const readErrorMessage = (error: unknown, fallback: string): string => {
   }
   return fallback;
 };
-
-/** The tag as the model wrote it, shown when the deployment turns widgets off. */
-function WidgetTagText({ raw }: { raw: string }) {
-  return <span className="block whitespace-pre-wrap break-words">{raw}</span>;
-}
 
 function WidgetLoading({ label }: { label: string }) {
   return (
@@ -327,7 +323,7 @@ export function GenerateWidget({ node }: WidgetNodeProps) {
      so both sides gate on `!== false` over one value. */
   const widgetsEnabled = startupConfig?.interface?.widgets !== false;
   if (!widgetsEnabled || !node.properties.spec) {
-    return <WidgetTagText raw={node.properties.raw ?? ''} />;
+    return <CardTagText raw={node.properties.raw ?? ''} />;
   }
   return <WidgetCard node={node} />;
 }
