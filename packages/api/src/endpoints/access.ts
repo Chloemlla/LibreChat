@@ -8,7 +8,7 @@ export const MAX_MODEL_STRING_LENGTH = 256;
  * A model identifier is opaque to this server, but it is echoed into logs and
  * handed to a provider, so it is held to a URL-safe, log-safe charset.
  */
-export const MODEL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/;
+export const MODEL_PATTERN: RegExp = /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/;
 
 /** Why a model was refused, and the wording both enforcers report it with. */
 export type ModelRejection =

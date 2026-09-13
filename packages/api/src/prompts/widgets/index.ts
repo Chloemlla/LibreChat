@@ -75,4 +75,3 @@ export function generateWidgetCodegenPrompt(spec: string): string {
   return `${codegenPrompt}\n\n# Specification\n\n${spec}`;
 }
 
-export const WIDGET_TAG_NAME = WIDGET_TAG;
