@@ -1,68 +1,53 @@
-const { handleError } = require('@librechat/api');
-const { resolveModelCatalogKey, ViolationTypes } = require('librechat-data-provider');
+const {
+  handleError,
+  checkModelAccess,
+  modelRejectionMessage,
+  modelRejectionStatus,
+} = require('@librechat/api');
+const { ViolationTypes } = require('librechat-data-provider');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const { logViolation } = require('~/cache');
 
-const MAX_MODEL_STRING_LENGTH = 256;
-const MODEL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/;
-
 /**
- * Validates the model of the request.
+ * Builds a guard around the model-access rule in `@librechat/api`, which is the
+ * single definition of which models a request may name. Two guards exist because
+ * the callers answer in different shapes — the chat stream over SSE, the widget
+ * compile endpoint over JSON — and only the refusal differs between them.
  *
- * @async
- * @param {ServerRequest} req - The Express request object.
- * @param {Express.Response} res - The Express response object.
- * @param {Function} next - The Express next function.
+ * @param {Function} reject - Renders a refusal onto the response.
+ * @returns {Function} Express middleware.
  */
-const validateModel = async (req, res, next) => {
-  const { endpoint } = req.body;
-  const rawModel = req.body.model;
+const createValidateModel = (reject) => async (req, res, next) => {
+  const access = await checkModelAccess({
+    endpoint: req.body?.endpoint,
+    model: req.body?.model,
+    getEndpointsConfig: () => getEndpointsConfig(req),
+    getModelsConfig: () => getModelsConfig(req),
+  });
 
-  if (!rawModel || typeof rawModel !== 'string') {
-    return handleError(res, { text: 'Model not provided' });
-  }
-
-  const model = rawModel.trim();
-  if (!model || model.length > MAX_MODEL_STRING_LENGTH || !MODEL_PATTERN.test(model)) {
-    return handleError(res, { text: 'Invalid model identifier' });
-  }
-
-  req.body.model = model;
-
-  const endpointsConfig = await getEndpointsConfig(req);
-  const endpointConfig = endpointsConfig?.[endpoint];
-
-  if (endpointConfig?.userProvide) {
+  if (access.ok) {
+    req.body.model = access.model;
     return next();
   }
 
-  const modelsConfig = await getModelsConfig(req);
-
-  if (!modelsConfig) {
-    return handleError(res, { text: 'Models not loaded' });
+  if (access.rejection === 'model_not_offered') {
+    const { ILLEGAL_MODEL_REQ_SCORE: score = 1 } = process.env ?? {};
+    const type = ViolationTypes.ILLEGAL_MODEL_REQUEST;
+    await logViolation(req, res, type, { type }, score);
   }
 
-  const availableModels = modelsConfig[resolveModelCatalogKey(endpoint, modelsConfig)];
-  if (!availableModels) {
-    return handleError(res, { text: 'Endpoint models not loaded' });
-  }
-
-  let validModel = !!availableModels.find((availableModel) => availableModel === model);
-
-  if (validModel) {
-    return next();
-  }
-
-  const { ILLEGAL_MODEL_REQ_SCORE: score = 1 } = process.env ?? {};
-
-  const type = ViolationTypes.ILLEGAL_MODEL_REQUEST;
-  const errorMessage = {
-    type,
-  };
-
-  await logViolation(req, res, type, errorMessage, score);
-  return handleError(res, { text: 'Illegal model request' });
+  return reject(res, access.rejection);
 };
+
+/** Chat guard: refuses through the SSE helper the chat stream already speaks. */
+const validateModel = createValidateModel((res, rejection) =>
+  handleError(res, { text: modelRejectionMessage(rejection) }),
+);
+
+/** JSON guard: the same rule, in a shape a JSON client can read. */
+validateModel.json = createValidateModel((res, rejection) =>
+  res.status(modelRejectionStatus(rejection)).json({ error: modelRejectionMessage(rejection) }),
+);
 
 module.exports = validateModel;

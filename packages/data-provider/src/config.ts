@@ -1916,6 +1916,7 @@ export const interfaceSchema = z
       .optional(),
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
+    widgets: z.boolean().optional(),
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
@@ -2018,6 +2019,7 @@ export const interfaceSchema = z
     },
     fileSearch: true,
     fileCitations: true,
+    widgets: true,
     buildInfo: true,
     remoteAgents: {
       use: false,

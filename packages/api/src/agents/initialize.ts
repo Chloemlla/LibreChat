@@ -113,7 +113,7 @@ import { filterFilesByEndpointRuntimeConfig } from '~/files';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { PARTIAL_RESOLVED_CONVERSATION } from './guard';
 import { applyBackgroundToolCalls } from './background';
-import { generateArtifactsPrompt } from '~/prompts';
+import { generateArtifactsPrompt, generateWidgetsPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
 
@@ -2005,6 +2005,17 @@ export async function initializeAgent(
     });
     appendAdditionalInstructions(agent, artifactsPromptResult);
   }
+
+  /**
+   * Default-on, so the deployment ships the protocol to every agent and an
+   * operator turns it off with `interface.widgets: false`. Read through the
+   * loaded interface config, the same object `/api/config` hands the client,
+   * so both sides gate on one value.
+   */
+  appendAdditionalInstructions(
+    agent,
+    generateWidgetsPrompt(appConfig?.interfaceConfig?.widgets !== false),
+  );
 
   let skillCount = 0;
   /**

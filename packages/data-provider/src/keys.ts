@@ -112,6 +112,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  generateWidget = 'generateWidget',
   subagentControl = 'subagentControl',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',

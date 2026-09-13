@@ -245,6 +245,11 @@ interface:
   marketplace:
     use: false
   fileCitations: true
+  # Let agents answer with interactive cards (default: true).
+  # The protocol directive is appended to every agent's instructions, so the model may emit a
+  # <GenerateWidget> tag carrying a card specification; the client compiles it into a sandboxed
+  # component. Set false to stop injecting the directive entirely.
+  widgets: true
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true
   # Tools pinned to the prompt bar by default for all users.

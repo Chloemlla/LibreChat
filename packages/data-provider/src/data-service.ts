@@ -408,6 +408,12 @@ export const getModels = async (): Promise<t.TModelsConfig> => {
   return request.get(endpoints.models());
 };
 
+export const generateWidget = async (
+  payload: t.TWidgetGenerateRequest,
+): Promise<t.TWidgetGenerateResponse> => {
+  return request.post(endpoints.widgetGenerate(), payload);
+};
+
 /* Assistants */
 
 export const createAssistant = ({

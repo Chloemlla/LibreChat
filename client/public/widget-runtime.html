@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      Loaded inside <iframe sandbox="allow-scripts">, so this document has an opaque
+      origin: it cannot read the parent, its cookies or its storage. The policy below
+      narrows it further — only the pinned library scripts may load, and
+      `connect-src 'none'` is what stops generated code from posting the spec (or
+      anything else) anywhere. `default-src 'none'` denies every other fetch type.
+      A meta policy can only narrow, never widen. `'unsafe-eval'` is required because
+      the compiled component is executed with `new Function` and because the Tailwind
+      play CDN compiles at runtime; `'unsafe-inline'` covers the runner below, which is
+      part of this static document and takes no input from the host at parse time.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.7/babel.min.js https://cdn.tailwindcss.com/3.4.17; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'"
+    />
+    <title>Widget runtime</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+      /* Driven by the class the host toggles, not by the OS: `prefers-color-scheme`
+         inside a frame follows the system, which is not the app's theme. */
+      html {
+        color-scheme: light;
+      }
+      html.dark {
+        color-scheme: dark;
+      }
+      body {
+        color: CanvasText;
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      #widget-root {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="widget-root"></div>
+    <!--
+      The generated component is a React component, and the codegen prompt follows the
+      artifact pipeline in producing Tailwind classes, so the same pinned play CDN the
+      artifact preview loads is pinned here. It compiles in the frame and injects a
+      style element; it fetches nothing, and `connect-src 'none'` still denies the
+      generated code any network access of its own.
+    -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script>
+      /* Class mode, because the frame has to follow the application's theme rather than
+         the OS; the host sends that flag and `applyTheme` below sets the class. */
+      tailwind.config = { darkMode: 'class' };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.7/babel.min.js"></script>
+    <script>
+      (function () {
+        'use strict';
+
+        var MAX_MESSAGE_LENGTH = 300;
+        var root = document.getElementById('widget-root');
+        var reactRoot = null;
+        var renderCount = 0;
+        var failed = false;
+
+        /* Tailwind runs in class mode here, so the theme the host resolved has to land
+           on the root as a class. Anything that is not `true` is treated as light. */
+        function applyTheme(dark) {
+          document.documentElement.classList.toggle('dark', dark === true);
+        }
+
+        function post(message) {
+          /* The frame's origin is opaque, so the host is addressed with '*'; nothing
+             sent here is secret — it is a height, an error string, or a ready ping. */
+          parent.postMessage(message, '*');
+        }
+
+        function fail(message) {
+          failed = true;
+          post({ type: 'widget:error', message: String(message).slice(0, MAX_MESSAGE_LENGTH) });
+        }
+
+        function reportHeight() {
+          var height = Math.ceil(root.getBoundingClientRect().height);
+          if (height > 0) {
+            post({ type: 'widget:height', height: height });
+          }
+        }
+
+        /* The generated component is untrusted, so a throw inside it becomes a
+           reported error instead of a blank frame. */
+        class WidgetBoundary extends React.Component {
+          constructor(props) {
+            super(props);
+            this.state = { failed: false };
+          }
+
+          static getDerivedStateFromError() {
+            return { failed: true };
+          }
+
+          componentDidCatch(error) {
+            fail(error && error.message ? error.message : error);
+          }
+
+          render() {
+            return this.state.failed ? null : this.props.children;
+          }
+        }
+
+        function renderWidget(code) {
+          if (typeof code !== 'string' || code === '') {
+            return;
+          }
+          try {
+            var compiled = Babel.transform(code, {
+              filename: 'widget.jsx',
+              presets: [['react', { runtime: 'classic' }]],
+            }).code;
+            /* The endpoint returns one function body that declares `Widget`; a
+               `module.exports` fallback keeps an ESM-shaped answer working too. */
+            var factory = new Function(
+              'React',
+              'module',
+              'exports',
+              compiled +
+                '\n;return typeof Widget === "function" ? Widget' +
+                ' : (module.exports && (module.exports.default || module.exports.Widget)) || null;',
+            );
+            var moduleObject = { exports: {} };
+            var Widget = factory(React, moduleObject, moduleObject.exports);
+            if (typeof Widget !== 'function') {
+              fail('the generated code did not produce a Widget component');
+              return;
+            }
+            if (!reactRoot) {
+              reactRoot = ReactDOM.createRoot(root);
+            }
+            /* A fresh key remounts the boundary, so a retry after a render error is
+               not swallowed by the previous failure. */
+            renderCount += 1;
+            failed = false;
+            reactRoot.render(
+              React.createElement(
+                WidgetBoundary,
+                { key: String(renderCount) },
+                React.createElement(Widget, null),
+              ),
+            );
+            window.requestAnimationFrame(reportHeight);
+          } catch (error) {
+            fail(error && error.message ? error.message : error);
+          }
+        }
+
+        window.addEventListener('message', function (event) {
+          var data = event.data;
+          if (!data || typeof data !== 'object') {
+            return;
+          }
+          /* A theme change repaints in place: the component keeps its state, so a slider
+             the user is dragging does not jump back when the app switches theme. */
+          if (data.type === 'widget:theme') {
+            applyTheme(data.dark);
+            return;
+          }
+          if (data.type !== 'widget:render') {
+            return;
+          }
+          applyTheme(data.dark);
+          renderWidget(data.code);
+        });
+
+        var observer = new ResizeObserver(function () {
+          if (!failed) {
+            reportHeight();
+          }
+        });
+        observer.observe(root);
+
+        if (
+          typeof React === 'undefined' ||
+          typeof ReactDOM === 'undefined' ||
+          typeof Babel === 'undefined'
+        ) {
+          fail('the widget runtime libraries failed to load');
+        } else {
+          post({ type: 'widget:ready' });
+        }
+      })();
+    </script>
+  </body>
+</html>

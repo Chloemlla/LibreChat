@@ -12,6 +12,7 @@ import {
   MCPUIResource,
   MCPUIResourceCarousel,
 } from '~/components/MCPUIResource';
+import { generateWidgetPlugin, GenerateWidget, WIDGET_NODE_TYPE } from '~/components/Widgets';
 import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
@@ -46,6 +47,7 @@ export const getRemarkPlugins = (latexParsing = true): PluggableList => [
   ...(latexParsing ? [remarkSingleDollarMath] : []),
   unicodeCitation,
   mcpUIResourcePlugin,
+  generateWidgetPlugin,
 ];
 
 export const getRehypePlugins = (): PluggableList => [
@@ -65,4 +67,5 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   'composite-citation': CompositeCitation,
   'mcp-ui-resource': MCPUIResource,
   'mcp-ui-carousel': MCPUIResourceCarousel,
+  [WIDGET_NODE_TYPE]: GenerateWidget,
 });

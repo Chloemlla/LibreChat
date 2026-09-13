@@ -42,9 +42,11 @@ const user = require('./user');
 const mcp = require('./mcp');
 const rum = require('./rum');
 const insights = require('./insights');
+const widgets = require('./widgets');
 
 module.exports = {
   insights,
+  widgets,
   rum,
   mcp,
   auth,

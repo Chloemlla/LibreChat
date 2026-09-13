@@ -13,7 +13,7 @@ import { ResourceType } from '../accessPermissions';
 import * as dataService from '../data-service';
 import * as m from '../types/mutations';
 import * as q from '../types/queries';
-import { QueryKeys } from '../keys';
+import { MutationKeys, QueryKeys } from '../keys';
 import * as s from '../schemas';
 import * as t from '../types';
 
@@ -198,6 +198,17 @@ export const useGetModelsQuery = (
     staleTime: Infinity,
     ...config,
   });
+};
+
+export const useGenerateWidgetMutation = (): UseMutationResult<
+  t.TWidgetGenerateResponse,
+  unknown,
+  t.TWidgetGenerateRequest
+> => {
+  return useMutation(
+    (payload: t.TWidgetGenerateRequest) => dataService.generateWidget(payload),
+    { mutationKey: [MutationKeys.generateWidget] },
+  );
 };
 
 export const useCreatePresetMutation = (): UseMutationResult<

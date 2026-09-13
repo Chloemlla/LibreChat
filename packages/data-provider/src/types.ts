@@ -653,6 +653,18 @@ export type TEndpointsConfig =
 
 export type TModelsConfig = Record<string, string[]>;
 
+/** One interactive-card compile request: the spec the model wrote, and the endpoint/model that compiles it. */
+export type TWidgetGenerateRequest = {
+  spec: string;
+  endpoint: string;
+  model: string;
+};
+
+/** The compiled single-file component body. */
+export type TWidgetGenerateResponse = {
+  code: string;
+};
+
 /** Server-resolved context window and pricing for one model. Rates are USD per 1M tokens. */
 export type TModelTokenomics = {
   context?: number;

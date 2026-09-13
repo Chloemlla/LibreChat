@@ -1,6 +1,7 @@
 const { EModelEndpoint, Providers, ViolationTypes } = require('librechat-data-provider');
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   handleError: jest.fn(),
 }));
 
@@ -209,6 +210,72 @@ describe('validateModel', () => {
       await validateModel(req, res, next);
 
       expect(handleError).toHaveBeenCalledWith(res, { text: 'Models not loaded' });
+    });
+  });
+
+  /**
+   * The JSON guard applies the same rule to callers that speak JSON rather than
+   * SSE — the widget compile endpoint — so a refusal arrives as an error status
+   * with a readable body instead of a 200 carrying an SSE frame.
+   */
+  describe('validateModel.json', () => {
+    let jsonRes;
+
+    beforeEach(() => {
+      jsonRes = { status: jest.fn(), json: jest.fn() };
+      jsonRes.status.mockReturnValue(jsonRes);
+    });
+
+    it('admits an offered model and trims it in place', async () => {
+      req.body.model = '  gpt-4o  ';
+
+      await validateModel.json(req, jsonRes, next);
+
+      expect(next).toHaveBeenCalled();
+      expect(req.body.model).toBe('gpt-4o');
+      expect(jsonRes.status).not.toHaveBeenCalled();
+    });
+
+    it('answers a model the endpoint does not offer with a 403', async () => {
+      req.body.model = 'not-in-list';
+
+      await validateModel.json(req, jsonRes, next);
+
+      expect(jsonRes.status).toHaveBeenCalledWith(403);
+      expect(jsonRes.json).toHaveBeenCalledWith({ error: 'Illegal model request' });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('answers a malformed model with a 400', async () => {
+      req.body.model = 'gpt 4o';
+
+      await validateModel.json(req, jsonRes, next);
+
+      expect(jsonRes.status).toHaveBeenCalledWith(400);
+      expect(jsonRes.json).toHaveBeenCalledWith({ error: 'Invalid model identifier' });
+    });
+
+    it('answers an unloaded catalog with a 503', async () => {
+      getModelsConfig.mockResolvedValue(null);
+
+      await validateModel.json(req, jsonRes, next);
+
+      expect(jsonRes.status).toHaveBeenCalledWith(503);
+      expect(jsonRes.json).toHaveBeenCalledWith({ error: 'Models not loaded' });
+    });
+
+    it('logs the violation for a model the endpoint does not offer', async () => {
+      req.body.model = 'not-in-list';
+
+      await validateModel.json(req, jsonRes, next);
+
+      expect(logViolation).toHaveBeenCalledWith(
+        req,
+        jsonRes,
+        ViolationTypes.ILLEGAL_MODEL_REQUEST,
+        expect.any(Object),
+        expect.anything(),
+      );
     });
   });
 });

@@ -3,3 +3,4 @@ export * from './format';
 export * from './migration';
 export * from './protection';
 export * from './schemas';
+export * from './widgets';
