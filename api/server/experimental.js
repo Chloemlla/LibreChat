@@ -660,6 +660,7 @@ if (cluster.isMaster) {
     app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
     app.use('/api/oauth', preAuthTenantMiddleware, routes.oauthProvider);
     app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
+    app.use('/api/setup', preAuthTenantMiddleware, routes.setup);
     app.use('/api/insights', routes.insights);
     app.use('/api/admin', routes.adminAuth);
     app.use('/api/admin/skills', routes.adminSkills);

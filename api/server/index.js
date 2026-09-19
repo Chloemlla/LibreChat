@@ -430,6 +430,7 @@ const startServer = async () => {
   /* API Endpoints */
   app.use('/api/oauth', preAuthTenantMiddleware, routes.oauthProvider);
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
+  app.use('/api/setup', preAuthTenantMiddleware, routes.setup);
   app.use('/api/insights', routes.insights);
   app.use('/api/admin', routes.adminAuth);
   app.use('/api/admin/config', routes.adminConfig);

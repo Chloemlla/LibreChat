@@ -10,6 +10,7 @@ import SocialButton from '~/components/Auth/SocialButton';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
 import LoginForm from './LoginForm';
+import Setup, { useSetupStatus } from './Setup';
 
 interface LoginLocationState {
   redirect_to?: string;
@@ -26,7 +27,9 @@ function Login() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { error, setError, login } = useAuthContext();
-  const { startupConfig } = useOutletContext<TLoginLayoutContext>();
+  const { startupConfig, setHeaderText } = useOutletContext<TLoginLayoutContext>();
+  const setup = useSetupStatus();
+  const setupRequired = setup.data?.required === true;
 
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
@@ -75,7 +78,16 @@ function Login() {
     startupConfig?.openidLoginEnabled &&
     startupConfig?.openidAutoRedirect &&
     startupConfig?.serverDomain &&
-    !isAutoRedirectDisabled;
+    !isAutoRedirectDisabled &&
+    /** An uninitialized deployment has no account to authenticate, so it must not be
+     *  handed to the identity provider before the first administrator exists. */
+    setup.data?.required === false;
+
+  useEffect(() => {
+    if (setupRequired) {
+      setHeaderText('com_auth_setup_title');
+    }
+  }, [setupRequired, setHeaderText]);
 
   useEffect(() => {
     if (shouldAutoRedirect) {
@@ -109,6 +121,10 @@ function Login() {
         </div>
       </div>
     );
+  }
+
+  if (setupRequired) {
+    return <Setup />;
   }
 
   return (

@@ -11,6 +11,8 @@ export * from './artifacts';
 export * from './admin';
 /* Capabilities */
 export * from './capabilities';
+/* First-run setup */
+export * from './setup';
 export * from './cdn';
 export * from './code';
 /* Auth */

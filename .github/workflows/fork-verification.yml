@@ -91,6 +91,7 @@ jobs:
               src/oauth
               src/prompts/widgets
               src/schedules
+              src/setup
               src/widgets
           - workspace: client
             tests: >-

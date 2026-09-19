@@ -385,7 +385,7 @@ const registerUser = async (user, additionalData = {}) => {
   }
 
   const { email, password, name, username } = result.data;
-  const { provider, ...trustedAdditionalData } = additionalData ?? {};
+  const { provider, role, ...trustedAdditionalData } = additionalData ?? {};
 
   let newUserId;
   try {
@@ -415,6 +415,10 @@ const registerUser = async (user, additionalData = {}) => {
     // Only the first user in the unscoped, single-tenant deployment bootstraps ADMIN.
     // Tenant administrators must be provisioned through a trusted administrative flow.
     const isFirstRegisteredUser = !tenantId && (await countUsers()) === 0;
+    /** An explicit role is how the first-run setup path provisions an administrator; the
+     *  spread below would otherwise grant it, so it is read out of the trusted bag and
+     *  narrowed to a system role rather than trusted as-is. */
+    const explicitRole = role === SystemRoles.ADMIN || role === SystemRoles.USER ? role : undefined;
 
     const salt = bcrypt.genSaltSync(10);
     const newUserData = {
@@ -423,7 +427,7 @@ const registerUser = async (user, additionalData = {}) => {
       username,
       name,
       avatar: null,
-      role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
+      role: explicitRole ?? (isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER),
       password: bcrypt.hashSync(password, salt),
       ...trustedAdditionalData,
     };

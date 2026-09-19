@@ -14,20 +14,28 @@ const connect = require('./connect');
   console.purple('--------------------------');
 
   if (process.argv.length < 5) {
-    console.orange('Usage: npm run create-user -- <email> <name> <username> [--email-verified=false]');
+    console.orange(
+      'Usage: npm run create-user -- <email> <name> <username> [--email-verified=false] [--role=ADMIN]',
+    );
     console.orange('Note: if you do not pass in the arguments, you will be prompted for them.');
     console.orange(
       'If you really need to pass in the password, you can do so as the 4th argument (not recommended for security).',
     );
     console.orange('Use --email-verified=false to set emailVerified to false. Default is true.');
+    console.orange('Use --role=ADMIN to create an administrator; the default role is USER.');
     console.purple('--------------------------');
   }
 
   // Parse command line arguments
-  let email, password, name, username, emailVerified, provider;
+  let email, password, name, username, emailVerified, provider, role;
   for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i].startsWith('--email-verified=')) {
       emailVerified = process.argv[i].split('=')[1].toLowerCase() !== 'false';
+      continue;
+    }
+
+    if (process.argv[i].startsWith('--role=')) {
+      role = process.argv[i].split('=')[1];
       continue;
     }
 
@@ -104,7 +112,11 @@ or the user will need to attempt logging in to have a verification link sent to 
   }
 
   const user = { email, password, name, username, confirm_password: password };
-  const additionalData = { emailVerified, ...(provider !== undefined ? { provider } : {}) };
+  const additionalData = {
+    emailVerified,
+    ...(provider !== undefined ? { provider } : {}),
+    ...(role !== undefined ? { role } : {}),
+  };
   let result;
   try {
     result = await registerUser(user, additionalData);
