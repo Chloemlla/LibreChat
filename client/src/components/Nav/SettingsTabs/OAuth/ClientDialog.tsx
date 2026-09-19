@@ -214,11 +214,16 @@ export default function ClientDialog({ client, open, onOpenChange, onSecret }: C
                 <div key={scope.key} className="flex items-start gap-2">
                   <Checkbox
                     id={`oauth-scope-${scope.key}`}
+                    aria-labelledby={`oauth-scope-label-${scope.key}`}
                     checked={scopes.includes(scope.key)}
                     onCheckedChange={(checked) => toggleScope(scope.key, checked === true)}
                   />
                   <div className="flex flex-col">
-                    <Label htmlFor={`oauth-scope-${scope.key}`} className="font-normal">
+                    <Label
+                      id={`oauth-scope-label-${scope.key}`}
+                      htmlFor={`oauth-scope-${scope.key}`}
+                      className="font-normal"
+                    >
                       {scope.label}
                     </Label>
                     <span className="text-xs text-text-secondary">{scope.description}</span>
@@ -243,10 +248,15 @@ export default function ClientDialog({ client, open, onOpenChange, onSecret }: C
               )}
             </div>
             <div className="flex items-center justify-between gap-3">
-              <Label htmlFor="oauth-client-enabled">
+              <Label id="oauth-client-enabled-label" htmlFor="oauth-client-enabled">
                 {localize('com_ui_oauth_client_enabled')}
               </Label>
-              <Switch id="oauth-client-enabled" checked={enabled} onCheckedChange={setEnabled} />
+              <Switch
+                id="oauth-client-enabled"
+                aria-labelledby="oauth-client-enabled-label"
+                checked={enabled}
+                onCheckedChange={setEnabled}
+              />
             </div>
           </div>
         }

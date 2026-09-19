@@ -19,12 +19,15 @@ export interface WebAppManifestIcon {
   purpose?: string;
 }
 
-/** The parts of a web app manifest this module reads and writes. */
+/** The parts of a web app manifest this module reads, writes, or has to carry
+ *  through untouched. */
 export interface WebAppManifest {
   name?: string;
   short_name?: string;
   start_url?: string;
   icons?: WebAppManifestIcon[];
+  display?: string;
+  theme_color?: string;
 }
 
 /** A deployment's identity, resolved. Every field is present: the client build no
