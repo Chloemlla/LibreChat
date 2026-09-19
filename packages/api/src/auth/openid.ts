@@ -67,6 +67,10 @@ function hasOpenIdLookupValue(value: string | undefined): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+function hasUsableEmail(email: string | undefined): email is string {
+  return typeof email === 'string' && email.trim().length > 0;
+}
+
 function getElapsedSeconds(startedAt: bigint): number {
   return Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
 }
@@ -249,6 +253,13 @@ export async function findOpenIDUser({
     );
     if (primaryIssuerResolution) return finish(primaryIssuerResolution);
 
+    if (!user && !hasUsableEmail(email)) {
+      logger.warn(
+        `[${strategyName}] Rejected login for openidId ${openidId}: no usable email claim was provided`,
+      );
+      return finish({ user: null, error: ErrorTypes.AUTH_FAILED, migration: false });
+    }
+
     if (!user && email) {
       user = await findUser({ email });
       logger.warn(
@@ -256,7 +267,7 @@ export async function findOpenIDUser({
       );
 
       // If user found by email, check if they're allowed to use OpenID provider
-      if (user && user.provider && user.provider !== 'openid') {
+      if (user && user.provider && user.provider !== 'openid' && user.provider !== 'local') {
         logger.warn(
           `[${strategyName}] Attempted OpenID login by user ${user.email}, was registered with "${user.provider}" provider`,
         );
@@ -279,9 +290,15 @@ export async function findOpenIDUser({
       if (emailIssuerResolution) return finish(emailIssuerResolution);
 
       if (user && !user.openidId) {
-        logger.info(
-          `[${strategyName}] Preparing user ${user.email} for migration to OpenID with sub: ${openidId}`,
-        );
+        if (user.provider === 'local') {
+          logger.info(
+            `[${strategyName}] Linking existing local account ${user.email} to OpenID with sub: ${openidId}`,
+          );
+        } else {
+          logger.info(
+            `[${strategyName}] Preparing user ${user.email} for migration to OpenID with sub: ${openidId}`,
+          );
+        }
         user.provider = 'openid';
         user.openidId = openidId;
         if (normalizedIssuer) user.openidIssuer = normalizedIssuer;

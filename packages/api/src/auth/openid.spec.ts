@@ -120,6 +120,32 @@ describe('findOpenIDUser', () => {
       expect(recordOpenIDUserLookup).toHaveBeenCalledWith('found', expect.any(Number));
     });
 
+    it('should keep an already-linked user when the token carries no email', async () => {
+      const mockUser: IUser = {
+        _id: newId(),
+        provider: 'openid',
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        email: 'user@example.com',
+        username: 'testuser',
+      } as IUser;
+
+      mockFindUser.mockResolvedValueOnce(mockUser);
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        findUser: mockFindUser,
+      });
+
+      expect(mockFindUser).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        user: mockUser,
+        error: null,
+        migration: false,
+      });
+    });
+
     it('should find user by idOnTheSource', async () => {
       const mockUser: IUser = {
         _id: newId(),
@@ -356,7 +382,7 @@ describe('findOpenIDUser', () => {
       });
     });
 
-    it('should not search by email if not provided', async () => {
+    it('should reject an identity with no email when no user matched', async () => {
       mockFindUser.mockResolvedValueOnce(null);
 
       const result = await findOpenIDUser({
@@ -372,14 +398,36 @@ describe('findOpenIDUser', () => {
       });
       expect(result).toEqual({
         user: null,
-        error: null,
+        error: ErrorTypes.AUTH_FAILED,
+        migration: false,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('no usable email claim was provided'),
+      );
+      expect(recordOpenIDUserLookup).toHaveBeenCalledWith('auth_failed', expect.any(Number));
+    });
+
+    it('should reject a whitespace-only email when no user matched', async () => {
+      mockFindUser.mockResolvedValueOnce(null);
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        findUser: mockFindUser,
+        email: '   ',
+      });
+
+      expect(mockFindUser).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        user: null,
+        error: ErrorTypes.AUTH_FAILED,
         migration: false,
       });
     });
   });
 
   describe('Provider conflict handling', () => {
-    it('should return error when user has different provider', async () => {
+    it('should return error when user has a different federated provider', async () => {
       const mockUser: IUser = {
         _id: newId(),
         provider: 'google',
@@ -403,6 +451,35 @@ describe('findOpenIDUser', () => {
         error: ErrorTypes.AUTH_FAILED,
         migration: false,
       });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('was registered with "google" provider'),
+      );
+    });
+
+    it('should reject an email match on any non-local federated provider', async () => {
+      const mockUser: IUser = {
+        _id: newId(),
+        provider: 'facebook',
+        email: 'user@example.com',
+        username: 'testuser',
+      } as IUser;
+
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        findUser: mockFindUser,
+        email: 'user@example.com',
+      });
+
+      expect(result).toEqual({
+        user: null,
+        error: ErrorTypes.AUTH_FAILED,
+        migration: false,
+      });
+      expect(mockUser.provider).toBe('facebook');
+      expect(mockUser.openidId).toBeUndefined();
     });
 
     it('should reject email fallback when existing openidId does not match token sub', async () => {
@@ -541,6 +618,92 @@ describe('findOpenIDUser', () => {
       });
     });
 
+    it('should link an existing local account by email', async () => {
+      const mockUser: IUser = {
+        _id: newId(),
+        provider: 'local',
+        email: 'user@example.com',
+        username: 'testuser',
+      } as IUser;
+
+      mockFindUser
+        .mockResolvedValueOnce(null) // Primary condition fails
+        .mockResolvedValueOnce(mockUser); // Email search finds the password account
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        findUser: mockFindUser,
+        email: 'user@example.com',
+      });
+
+      expect(result).toEqual({
+        user: {
+          ...mockUser,
+          provider: 'openid',
+          openidId: 'openid_123',
+          openidIssuer: issuer,
+        },
+        error: null,
+        migration: true,
+      });
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.stringContaining('Linking existing local account user@example.com'),
+      );
+    });
+
+    it('should reject a local account whose stored openidId does not match the token sub', async () => {
+      const mockUser: IUser = {
+        _id: newId(),
+        provider: 'local',
+        openidId: 'existing_openid',
+        email: 'user@example.com',
+        username: 'testuser',
+      } as IUser;
+
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: issuer,
+        findUser: mockFindUser,
+        email: 'user@example.com',
+      });
+
+      expect(result).toEqual({
+        user: null,
+        error: ErrorTypes.AUTH_FAILED,
+        migration: false,
+      });
+      expect(mockUser.provider).toBe('local');
+    });
+
+    it('should reject a local account bound to a different issuer', async () => {
+      const mockUser: IUser = {
+        _id: newId(),
+        provider: 'local',
+        openidId: 'openid_123',
+        openidIssuer: 'https://issuer-a.example.com',
+        email: 'user@example.com',
+        username: 'testuser',
+      } as IUser;
+
+      mockFindUser.mockResolvedValueOnce(null).mockResolvedValueOnce(mockUser);
+
+      const result = await findOpenIDUser({
+        openidId: 'openid_123',
+        openidIssuer: 'https://issuer-b.example.com',
+        findUser: mockFindUser,
+        email: 'user@example.com',
+      });
+
+      expect(result).toEqual({
+        user: null,
+        error: ErrorTypes.AUTH_FAILED,
+        migration: false,
+      });
+    });
+
     it('should persist issuer when migrating a user by email', async () => {
       const mockUser: IUser = {
         _id: newId(),
@@ -654,7 +817,7 @@ describe('findOpenIDUser', () => {
   });
 
   describe('Edge cases', () => {
-    it('should handle empty string openidId', async () => {
+    it('should reject an empty string openidId with no email and no matched user', async () => {
       mockFindUser.mockResolvedValueOnce(null);
 
       const result = await findOpenIDUser({
@@ -665,7 +828,7 @@ describe('findOpenIDUser', () => {
       expect(mockFindUser).not.toHaveBeenCalled();
       expect(result).toEqual({
         user: null,
-        error: null,
+        error: ErrorTypes.AUTH_FAILED,
         migration: false,
       });
     });
@@ -686,7 +849,7 @@ describe('findOpenIDUser', () => {
       });
       expect(result).toEqual({
         user: null,
-        error: null,
+        error: ErrorTypes.AUTH_FAILED,
         migration: false,
       });
     });

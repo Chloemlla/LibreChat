@@ -579,6 +579,86 @@ describe('setupOpenId', () => {
     expect(updateUser).not.toHaveBeenCalled();
   });
 
+  it('should link an existing local account by email instead of blocking login', async () => {
+    const existingUser = {
+      _id: 'localUserId',
+      provider: 'local',
+      email: tokenset.claims().email,
+      username: 'localuser',
+      name: 'Local User',
+    };
+    findUser.mockImplementation(async (query) => {
+      if (query.email === tokenset.claims().email) {
+        return existingUser;
+      }
+      return null;
+    });
+
+    const { user } = await validate(tokenset);
+
+    expect(user).toBeTruthy();
+    expect(createUser).not.toHaveBeenCalled();
+    expect(updateUser).toHaveBeenCalledWith(
+      existingUser._id,
+      expect.objectContaining({
+        provider: 'openid',
+        openidId: tokenset.claims().sub,
+        openidIssuer: 'https://fake-issuer.com',
+      }),
+    );
+  });
+
+  it('should refuse to link an existing local account when the email is not asserted as verified', async () => {
+    const existingUser = {
+      _id: 'localUserId',
+      provider: 'local',
+      email: tokenset.claims().email,
+      username: 'localuser',
+      name: 'Local User',
+    };
+    findUser.mockImplementation(async (query) => {
+      if (query.email === tokenset.claims().email) {
+        return existingUser;
+      }
+      return null;
+    });
+    const userinfo = { ...tokenset.claims(), email_verified: false };
+
+    const result = await validate({ ...tokenset, claims: () => userinfo });
+
+    expect(result.user).toBe(false);
+    expect(result.details.message).toBe(ErrorTypes.AUTH_FAILED);
+    expect(createUser).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('should refuse to create an account when the email is not asserted as verified', async () => {
+    findUser.mockResolvedValue(null);
+    const userinfo = { ...tokenset.claims(), email_verified: false };
+
+    const result = await validate({ ...tokenset, claims: () => userinfo });
+
+    expect(result.user).toBe(false);
+    expect(result.details.message).toBe(ErrorTypes.AUTH_FAILED);
+    expect(createUser).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('should refuse to create an account when no email claim can be resolved', async () => {
+    findUser.mockResolvedValue(null);
+    const userinfo = { ...tokenset.claims() };
+    delete userinfo.email;
+    delete userinfo.preferred_username;
+    delete userinfo.username;
+
+    const result = await validate({ ...tokenset, claims: () => userinfo });
+
+    expect(result.user).toBe(false);
+    expect(result.details.message).toBe(ErrorTypes.AUTH_FAILED);
+    expect(createUser).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
   it('should block login when email fallback finds user with mismatched openidId', async () => {
     const existingUser = {
       _id: 'existingUserId',

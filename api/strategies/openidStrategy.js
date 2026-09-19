@@ -595,6 +595,13 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error(ErrorTypes.AUTH_FAILED);
   }
 
+  if (result.migration && userinfo.email_verified !== true) {
+    logger.error(
+      `[openidStrategy] Authentication blocked - linking an account requires a verified email [Identifier: ${email}]`,
+    );
+    throw new Error(ErrorTypes.AUTH_FAILED);
+  }
+
   const appConfig = user?.tenantId ? await resolveAppConfigForUser(getAppConfig, user) : baseConfig;
 
   if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
@@ -677,12 +684,19 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
   }
 
   if (!user) {
+    if (!email || !email.trim() || userinfo.email_verified !== true) {
+      logger.error(
+        `[openidStrategy] Authentication blocked - account creation requires a verified email [Identifier: ${email}]`,
+      );
+      throw new Error(ErrorTypes.AUTH_FAILED);
+    }
+
     user = {
       provider: 'openid',
       openidId: userinfo.sub,
       username,
-      email: email || '',
-      emailVerified: userinfo.email_verified || false,
+      email,
+      emailVerified: true,
       name: fullName,
       idOnTheSource: userinfo.oid,
       openidIssuer,
