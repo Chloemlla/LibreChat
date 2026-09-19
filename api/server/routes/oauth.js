@@ -70,7 +70,21 @@ router.get('/error', (req, res) => {
   redirectToAuthFailure(res, authFailureRedirectOptions);
 });
 
-router.get('/authorize', optionalJwtAuth, oauthProviderHandlers.authorizePage);
+/**
+ * The consent screen is a client route. This router is mounted ahead of the SPA
+ * fallback, so falling through is what lets a browser reach it: the page reads the same
+ * query this endpoint documents, asks `/api/oauth/authorize/context` what it means, and
+ * reports the decision to `/api/oauth/authorize/decision`.
+ *
+ * `?format=html` keeps the server-rendered page reachable for a caller that has no
+ * bundle to run — the same page, without the app shell around it.
+ */
+router.get('/authorize', optionalJwtAuth, (req, res, next) => {
+  if (req.query.format === 'html') {
+    return oauthProviderHandlers.authorizePage(req, res, next);
+  }
+  return next();
+});
 router.post('/authorize', optionalJwtAuth, oauthProviderHandlers.authorizeDecision);
 
 /**

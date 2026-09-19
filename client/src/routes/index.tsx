@@ -14,6 +14,7 @@ import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
+import ConsentRoute from './ConsentRoute';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
@@ -77,6 +78,10 @@ export const router = createBrowserRouter(
         {
           path: 'error',
           element: <OAuthError />,
+        },
+        {
+          path: 'authorize',
+          element: <ConsentRoute />,
         },
       ],
     },

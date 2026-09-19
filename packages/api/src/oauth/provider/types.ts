@@ -79,6 +79,52 @@ export interface OAuthGrantListItem {
   updatedAt: string;
 }
 
+/** One scope as the consent screen describes it, rather than as the token carries it. */
+export interface OAuthAuthorizationScope {
+  key: string;
+  label: string;
+  description: string;
+}
+
+/** Everything a consent screen renders, resolved server-side so the client holds no
+ *  authorization state of its own beyond the single-use `nonce`. */
+export interface OAuthAuthorizationContext {
+  clientId: string;
+  name: string;
+  description?: string;
+  logoUrl?: string;
+  homepageUrl?: string;
+  redirectUri: string;
+  scopes: OAuthAuthorizationScope[];
+  username: string;
+  nonce: string;
+}
+
+/** The three ways resolving an authorization request can end. `login_required` and
+ *  `access_denied` are not OAuth errors: the first has no redirect target yet, and the
+ *  second is decided before the request is validated into a consent. */
+export type OAuthAuthorizationOutcome =
+  | { kind: 'ok'; draft: OAuthConsentDraft }
+  | { kind: 'login_required'; loginUrl: string }
+  | { kind: 'access_denied'; message: string; redirect: string };
+
+/** A validated authorization request, before the single-use nonce is minted. */
+export interface OAuthConsentDraft {
+  client: IOAuthClient;
+  scopes: string[];
+  redirectUri: string;
+  state?: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: 'S256' | 'plain';
+  user: IUser;
+}
+
+/** The three ways spending a consent nonce can end. */
+export type OAuthConsentOutcome =
+  | { kind: 'ok'; redirect: string }
+  | { kind: 'login_required'; loginUrl: string }
+  | { kind: 'invalid' };
+
 export interface OAuthClientResponse {
   clientId: string;
   type: OAuthClientType;

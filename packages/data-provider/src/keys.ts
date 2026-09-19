@@ -85,6 +85,7 @@ export enum QueryKeys {
   synapseOAuthScopes = 'synapseOAuthScopes',
   synapseOAuthClients = 'synapseOAuthClients',
   synapseOAuthGrants = 'synapseOAuthGrants',
+  synapseOAuthAuthorization = 'synapseOAuthAuthorization',
   /* Skills */
   skills = 'skills',
   skill = 'skill',
@@ -175,6 +176,7 @@ export enum MutationKeys {
   rotateSynapseOAuthClientSecret = 'rotateSynapseOAuthClientSecret',
   deleteSynapseOAuthClient = 'deleteSynapseOAuthClient',
   revokeSynapseOAuthGrant = 'revokeSynapseOAuthGrant',
+  submitSynapseOAuthAuthorization = 'submitSynapseOAuthAuthorization',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
   createSchedule = 'createSchedule',

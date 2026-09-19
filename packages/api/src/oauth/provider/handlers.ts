@@ -1,7 +1,15 @@
 import type { Request, RequestHandler, Response } from 'express';
 import type { IUser } from '@librechat/data-schemas';
 import type { Model } from 'mongoose';
-import type { OAuthAccessContext, OAuthClientInput, OAuthModels } from './types';
+import type {
+  OAuthAccessContext,
+  OAuthAuthorizationContext,
+  OAuthAuthorizationOutcome,
+  OAuthAuthorizationScope,
+  OAuthClientInput,
+  OAuthConsentOutcome,
+  OAuthModels,
+} from './types';
 import {
   authenticateClient,
   buildMetadata,
@@ -43,7 +51,9 @@ export interface OAuthProviderHandlers {
   metadata: RequestHandler;
   scopes: RequestHandler;
   authorizePage: RequestHandler;
+  authorizeContext: RequestHandler;
   authorizeDecision: RequestHandler;
+  authorizeDecisionJson: RequestHandler;
   token: RequestHandler;
   userinfo: RequestHandler;
   introspect: RequestHandler;
@@ -265,6 +275,20 @@ function renderAuthorizationPage(params: {
 </html>`;
 }
 
+/**
+ * Names each granted scope for a consent screen. An unknown key still gets an entry
+ * rather than being dropped: the scope already cleared the client's allow-list, so
+ * omitting it would understate what the authorization actually carries.
+ */
+function describeScopes(scopes: string[]): OAuthAuthorizationScope[] {
+  return scopes.map((scope) => {
+    const known = oauthScopes.find((entry) => entry.key === scope);
+    return known
+      ? { key: known.key, label: known.label, description: known.description }
+      : { key: scope, label: scope, description: '' };
+  });
+}
+
 function withErrors(handler: RequestHandler): RequestHandler {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch((error) => sendOAuthError(res, error));
@@ -292,6 +316,102 @@ export function createOAuthProviderHandlers(
   const getIssuer = options.getIssuer ?? defaultIssuer;
   const getLoginRedirect = options.getLoginRedirect ?? defaultLoginRedirect;
 
+  /**
+   * Turns the authorize query into either a validated request or one of the two
+   * outcomes that are not OAuth errors. The order matters and matches the rendered
+   * page: the request is validated before the caller's right to grant is judged, so a
+   * malformed request is reported as such even to a user who could not have granted it.
+   */
+  const resolveAuthorization = async (req: OAuthRequest): Promise<OAuthAuthorizationOutcome> => {
+    const user = getRequestUser(req);
+    if (!user) {
+      return { kind: 'login_required', loginUrl: getLoginRedirect(req) };
+    }
+
+    const { client, scopes } = await prepareAuthorization(models, {
+      responseType: readString(req.query, 'response_type'),
+      clientId: readString(req.query, 'client_id'),
+      redirectUri: readString(req.query, 'redirect_uri'),
+      scope: readString(req.query, 'scope'),
+      codeChallenge: readString(req.query, 'code_challenge'),
+      codeChallengeMethod: readString(req.query, 'code_challenge_method'),
+    });
+    const redirectUri = readString(req.query, 'redirect_uri') ?? '';
+    const state = readString(req.query, 'state');
+
+    if (!isGrantingUser(user)) {
+      const message = 'Authorization user must be admin or trusted';
+      return {
+        kind: 'access_denied',
+        message,
+        redirect: buildRedirect(redirectUri, {
+          error: 'access_denied',
+          error_description: message,
+          state,
+        }),
+      };
+    }
+
+    return {
+      kind: 'ok',
+      draft: {
+        client,
+        scopes,
+        redirectUri,
+        state,
+        codeChallenge: readString(req.query, 'code_challenge'),
+        codeChallengeMethod: readString(req.query, 'code_challenge_method') as
+          | 'S256'
+          | 'plain'
+          | undefined,
+        user,
+      },
+    };
+  };
+
+  /**
+   * Spends the single-use nonce a consent screen was given. The nonce is consumed
+   * whether or not the decision is to approve, so a denied request cannot be replayed
+   * into an approval by resubmitting the same form.
+   */
+  const resolveConsent = async (req: OAuthRequest): Promise<OAuthConsentOutcome> => {
+    const user = getRequestUser(req);
+    if (!user) {
+      return { kind: 'login_required', loginUrl: getLoginRedirect(req) };
+    }
+
+    const nonce = readString(req.body, 'nonce');
+    const consent = nonce ? consumeConsentRequest(nonce) : null;
+    if (!consent || consent.userId !== getUserId(user)) {
+      return { kind: 'invalid' };
+    }
+
+    if (readString(req.body, 'decision') !== 'approve') {
+      return {
+        kind: 'ok',
+        redirect: buildRedirect(consent.redirectUri, {
+          error: 'access_denied',
+          error_description: 'Authorization user denied the request',
+          state: consent.state,
+        }),
+      };
+    }
+
+    const code = await createAuthorizationCode(models, {
+      clientId: consent.clientId,
+      user,
+      redirectUri: consent.redirectUri,
+      scopes: consent.scopes,
+      codeChallenge: consent.codeChallenge,
+      codeChallengeMethod: consent.codeChallengeMethod,
+    });
+
+    return {
+      kind: 'ok',
+      redirect: buildRedirect(consent.redirectUri, { code, state: consent.state }),
+    };
+  };
+
   return {
     metadata: withErrors(async (req, res) => {
       res.json(buildMetadata(getIssuer(req)));
@@ -302,101 +422,125 @@ export function createOAuthProviderHandlers(
     }),
 
     authorizePage: withErrors(async (req, res) => {
-      const oauthReq = req as OAuthRequest;
-      const user = getRequestUser(oauthReq);
-      if (!user) {
-        res.redirect(getLoginRedirect(oauthReq));
+      const outcome = await resolveAuthorization(req as OAuthRequest);
+
+      if (outcome.kind === 'login_required') {
+        res.redirect(outcome.loginUrl);
         return;
       }
 
-      const { client, scopes } = await prepareAuthorization(models, {
-        responseType: readString(req.query, 'response_type'),
-        clientId: readString(req.query, 'client_id'),
-        redirectUri: readString(req.query, 'redirect_uri'),
-        scope: readString(req.query, 'scope'),
-        codeChallenge: readString(req.query, 'code_challenge'),
-        codeChallengeMethod: readString(req.query, 'code_challenge_method'),
-      });
-      const redirectUri = readString(req.query, 'redirect_uri') ?? '';
-      const state = readString(req.query, 'state');
-
-      if (!isGrantingUser(user)) {
-        res.redirect(
-          buildRedirect(redirectUri, {
-            error: 'access_denied',
-            error_description: 'Authorization user must be admin or trusted',
-            state,
-          }),
-        );
+      if (outcome.kind === 'access_denied') {
+        res.redirect(outcome.redirect);
         return;
       }
 
+      const { draft } = outcome;
       const nonce = createConsentRequest({
-        clientId: client.clientId,
-        redirectUri,
-        scopes,
-        state,
-        codeChallenge: readString(req.query, 'code_challenge'),
-        codeChallengeMethod: readString(req.query, 'code_challenge_method') as 'S256' | 'plain',
-        userId: getUserId(user),
+        clientId: draft.client.clientId,
+        redirectUri: draft.redirectUri,
+        scopes: draft.scopes,
+        state: draft.state,
+        codeChallenge: draft.codeChallenge,
+        codeChallengeMethod: draft.codeChallengeMethod,
+        userId: getUserId(draft.user),
       });
 
       res.type('html').send(
         renderAuthorizationPage({
-          clientName: client.name,
-          description: client.description,
-          logoUrl: client.logoUrl,
-          redirectUri,
-          scopes,
-          username: user.username || user.name || user.email,
+          clientName: draft.client.name,
+          description: draft.client.description,
+          logoUrl: draft.client.logoUrl,
+          redirectUri: draft.redirectUri,
+          scopes: draft.scopes,
+          username: draft.user.username || draft.user.name || draft.user.email,
           nonce,
         }),
       );
     }),
 
-    authorizeDecision: withErrors(async (req, res) => {
-      const oauthReq = req as OAuthRequest;
-      const user = getRequestUser(oauthReq);
-      if (!user) {
-        res.redirect(getLoginRedirect(oauthReq));
+    authorizeContext: withErrors(async (req, res) => {
+      const outcome = await resolveAuthorization(req as OAuthRequest);
+
+      /**
+       * Both of these are answers to a well-formed request, not failures of it, so they
+       * carry 200: a 401 would be answered by the client's generic session recovery,
+       * whose login redirect drops the `redirect_to` this one preserves.
+       */
+      if (outcome.kind === 'login_required') {
+        res.json({ success: false, error: 'login_required', loginUrl: outcome.loginUrl });
         return;
       }
 
-      const nonce = readString(req.body, 'nonce');
-      const decision = readString(req.body, 'decision');
-      const consent = nonce ? consumeConsentRequest(nonce) : null;
+      if (outcome.kind === 'access_denied') {
+        res.json({
+          success: false,
+          error: 'access_denied',
+          message: outcome.message,
+          redirect: outcome.redirect,
+        });
+        return;
+      }
 
-      if (!consent || consent.userId !== getUserId(user)) {
+      const { draft } = outcome;
+      const nonce = createConsentRequest({
+        clientId: draft.client.clientId,
+        redirectUri: draft.redirectUri,
+        scopes: draft.scopes,
+        state: draft.state,
+        codeChallenge: draft.codeChallenge,
+        codeChallengeMethod: draft.codeChallengeMethod,
+        userId: getUserId(draft.user),
+      });
+
+      const context: OAuthAuthorizationContext = {
+        clientId: draft.client.clientId,
+        name: draft.client.name,
+        description: draft.client.description,
+        logoUrl: draft.client.logoUrl,
+        homepageUrl: draft.client.homepageUrl,
+        redirectUri: draft.redirectUri,
+        scopes: describeScopes(draft.scopes),
+        username: draft.user.username || draft.user.name || draft.user.email,
+        nonce,
+      };
+
+      res.json({ success: true, ...context });
+    }),
+
+    authorizeDecision: withErrors(async (req, res) => {
+      const outcome = await resolveConsent(req as OAuthRequest);
+
+      if (outcome.kind === 'login_required') {
+        res.redirect(outcome.loginUrl);
+        return;
+      }
+
+      if (outcome.kind === 'invalid') {
         res.status(400).send('Invalid or expired authorization request');
         return;
       }
 
-      if (decision !== 'approve') {
-        res.redirect(
-          buildRedirect(consent.redirectUri, {
-            error: 'access_denied',
-            error_description: 'Authorization user denied the request',
-            state: consent.state,
-          }),
-        );
+      res.redirect(outcome.redirect);
+    }),
+
+    authorizeDecisionJson: withErrors(async (req, res) => {
+      const outcome = await resolveConsent(req as OAuthRequest);
+
+      if (outcome.kind === 'login_required') {
+        res.json({ success: false, error: 'login_required', loginUrl: outcome.loginUrl });
         return;
       }
 
-      const code = await createAuthorizationCode(models, {
-        clientId: consent.clientId,
-        user,
-        redirectUri: consent.redirectUri,
-        scopes: consent.scopes,
-        codeChallenge: consent.codeChallenge,
-        codeChallengeMethod: consent.codeChallengeMethod,
-      });
+      if (outcome.kind === 'invalid') {
+        res.status(400).json({
+          success: false,
+          error: 'invalid_request',
+          message: 'Invalid or expired authorization request',
+        });
+        return;
+      }
 
-      res.redirect(
-        buildRedirect(consent.redirectUri, {
-          code,
-          state: consent.state,
-        }),
-      );
+      res.json({ success: true, redirect: outcome.redirect });
     }),
 
     token: withErrors(async (req, res) => {

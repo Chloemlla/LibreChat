@@ -391,6 +391,18 @@ export function revokeSynapseOAuthGrant(
   return request.post(endpoints.oauthRevokeGrant(grantId));
 }
 
+export function getSynapseOAuthAuthorizationContext(
+  params: oauth.SynapseOAuthAuthorizeParams,
+): Promise<oauth.SynapseOAuthAuthorizationContext> {
+  return request.get(endpoints.oauthAuthorizationContext(params));
+}
+
+export function submitSynapseOAuthAuthorizationDecision(
+  payload: oauth.SynapseOAuthAuthorizationDecisionRequest,
+): Promise<oauth.SynapseOAuthAuthorizationDecision> {
+  return request.post(endpoints.oauthAuthorizationDecision(), payload);
+}
+
 export function getPresets(): Promise<s.TPreset[]> {
   return request.get(endpoints.presets());
 }

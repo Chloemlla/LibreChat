@@ -11,6 +11,7 @@ export * from './Insights';
 export * from './Memories';
 export * from './Messages';
 export * from './Misc';
+export * from './OAuth';
 export * from './Projects';
 /* Scheduled chats */
 export * from './Schedules';

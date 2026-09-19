@@ -134,6 +134,12 @@ export const oauthGrants = () => `${oauthEndpoint}/grants`;
 export const oauthRevokeGrant = (grantId: string) =>
   `${oauthGrants()}/${encodeURIComponent(grantId)}/revoke`;
 
+/** The consent screen's data half, which answers `GET /oauth/authorize`'s own query. */
+export const oauthAuthorizationContext = (params: Record<string, string | undefined>) =>
+  `${oauthEndpoint}/authorize/context${buildQuery(params)}`;
+
+export const oauthAuthorizationDecision = () => `${oauthEndpoint}/authorize/decision`;
+
 export const conversationsRoot = `${BASE_URL}/api/convos`;
 
 export const conversations = (params: q.ConversationListParams) => {

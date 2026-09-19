@@ -50,6 +50,7 @@ import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
+import OAuthApps from '../SettingsTabs/OAuth';
 import ApiKeys from '../SettingsTabs/ApiKeys';
 import MemoryToggle from './MemoryToggle';
 import { TTSEndpoints } from '~/common';
@@ -199,6 +200,15 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_ui_admin_config_title',
     keywords: ['config', 'configs', 'override', 'overrides', 'admin', 'principal', 'tenant'],
     Component: AdminConfig,
+    show: (ctx) => ctx.hasAdminConfigAccess,
+  },
+  {
+    id: 'oauthApps',
+    tab: GENERAL,
+    section: 'admin',
+    labelKey: 'com_ui_oauth_apps_title',
+    keywords: ['oauth', 'client', 'clients', 'app', 'apps', 'grant', 'grants', 'authorization'],
+    Component: OAuthApps,
     show: (ctx) => ctx.hasAdminConfigAccess,
   },
 
