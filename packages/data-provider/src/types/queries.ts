@@ -18,9 +18,9 @@ import type {
   SkillSyncConfig,
 } from '../config';
 import type { TFileConfig } from '../file-config';
-import type { FunctionTool } from './assistants';
 import type { FiltersConfig } from '../filters';
 import type * as p from '../accessPermissions';
+import type { FunctionTool } from './tools';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
 import type * as t from '../types';
