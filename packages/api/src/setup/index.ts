@@ -35,6 +35,45 @@ export interface SetupHandlers {
   initialize: (req: ServerRequest, res: Response) => Promise<void>;
 }
 
+export interface SetupAnnouncementDeps {
+  /** Counts accounts holding a role; the deployment's own role list is the caller's to read. */
+  countUsersByRole: (roleName: string) => Promise<number>;
+  /** Public origin the deployment is served from, when the operator configured one. */
+  domainClient?: string;
+  /** Address the process actually bound to, used when no public origin is configured. */
+  fallbackOrigin: string;
+}
+
+/**
+ * The line an operator needs at boot while nothing can administer the deployment yet, or `null`
+ * once an administrator exists.
+ *
+ * A deployment can be listening, healthy and completely unadministrable at the same time — every
+ * other startup log reads normally — so the one state that needs a human gets its own message
+ * carrying the page that resolves it. Failures are logged and swallowed: an announcement must
+ * never be the reason a server refuses to boot.
+ */
+export async function describeSetupRequirement({
+  countUsersByRole,
+  domainClient,
+  fallbackOrigin,
+}: SetupAnnouncementDeps): Promise<string | null> {
+  try {
+    if ((await countUsersByRole(SystemRoles.ADMIN)) > 0) {
+      return null;
+    }
+  } catch (error) {
+    logger.error('[Setup] Unable to read the initialization state at boot', error);
+    return null;
+  }
+
+  const origin = (domainClient || fallbackOrigin).replace(/\/+$/, '');
+  return (
+    '[Setup] This deployment has no administrator account yet. ' +
+    `Open ${origin}/setup to create the first administrator.`
+  );
+}
+
 /**
  * A deployment is uninitialized for exactly as long as no account holds the administrator role.
  *

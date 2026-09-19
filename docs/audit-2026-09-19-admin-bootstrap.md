@@ -33,6 +33,7 @@
 | ADM-07 | `api/server/services/AuthService.js:417` | 竞态（TOCTOU） | 两个并发的首次注册请求会各自读到 `countUsers() === 0`，同时落库两个 `ADMIN`。没有唯一约束、没有标记位、没有事务 | 未改。窗口仅在「空库 + 同时两个访客」时存在，且普通注册路径（上游行为）本就有同样窗口。初始化页沿用同一语义；若需彻底消除需引入一次性标记集合（见「四、残留风险」） | 挂起 |
 | ADM-08 | `api/server/services/AuthService.js:417` | 静默提权 | 若管理员被删光（或全部用户被清空），下一个注册者会**静默**成为 `ADMIN` | 部分缓解：初始化页的判定基准是「无 `ADMIN` 账号」而非「无用户」，因此不会因为「有普通用户」而失效；但「管理员被删光后初始化页重新开放」这一性质仍然存在（此时部署本身已无人可管）。彻底关闭需一次性标记，见「四」 | 部分缓解 |
 | ADM-09 | `api/server/routes/config.js:96` | 可观测性 | `startupConfig` 只暴露 `registrationEnabled`，前端无从得知「这个部署还没有管理员」，因此首次访问只能显示一个普通登录页 | 新增 `GET /api/setup/status`，前端首访据此渲染初始化页 | 已修（本次） |
+| ADM-10 | `api/server/index.js`（启动日志） | 运维不可见 | 未初始化的部署在日志里与正常部署完全一致：监听正常、readiness 通过，唯一缺的是没人能管理它。运维只能靠自己想起「第一个注册的人会成为管理员」这条隐式规则 | 启动后检查管理员数量，为 0 时打印一条带 `/setup` 链接的 `warn` 指引 | 已修（本次） |
 
 ---
 
@@ -56,9 +57,22 @@
 
 ### 前端
 
-- `client/src/components/Auth/Setup.tsx`：初始化页（姓名/邮箱/用户名/密码/确认密码 + Turnstile），成功后倒计时回登录页
+- `client/src/components/Auth/Setup.tsx`：初始化页（姓名/邮箱/用户名/密码/确认密码 + Turnstile），成功后倒计时回登录页；直接访问时若部署已初始化则自动跳回 `/login`
+- `client/src/routes/index.tsx`：新增 `/setup` 路由（初始化页的正式地址，可分享/可 bookmark）
 - `client/src/components/Auth/Login.tsx`：`GET /api/setup/status` 返回 `required: true` 时以初始化页替换登录表单；**同时屏蔽 OpenID 自动跳转**——未初始化的部署没有账号可供 IdP 认证
 - `client/src/locales/en/translation.json`：4 个 `com_auth_setup_*` 文案
+
+### 启动日志指引
+
+服务器起来后如果仍然没有管理员，启动日志里会直接打印一条可点击的指引（`api/server/index.js`、`api/server/experimental.js`，后者只在 worker 1 打印一次）：
+
+```
+[Setup] This deployment has no administrator account yet. Open http://<DOMAIN_CLIENT|host:port>/setup to create the first administrator.
+```
+
+- 地址优先取 `DOMAIN_CLIENT`（对外地址），未配置时回落到进程实际绑定的 `host:port`
+- 文案由 `packages/api/src/setup/index.ts` 的 `describeSetupRequirement()` 产出；它**永不抛错**（读不到计数就记 error 日志并返回 null），不会因为一句提示把服务器启动搞挂
+- 已有管理员时返回 `null`，正常启动不会多出这行
 
 ---
 

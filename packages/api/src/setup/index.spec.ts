@@ -2,7 +2,7 @@ import { SystemRoles } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 import type { SetupAccountInput, SetupDeps, SetupHandlers, SetupRegistrationResult } from './index';
-import { createSetupHandlers } from './index';
+import { createSetupHandlers, describeSetupRequirement } from './index';
 
 const ACCOUNT: SetupAccountInput = {
   email: 'root@example.com',
@@ -174,6 +174,48 @@ describe('createSetupHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ message: 'Unable to initialize this deployment' });
+    });
+  });
+
+  describe('describeSetupRequirement', () => {
+    it('says nothing once an administrator exists', async () => {
+      const announcement = await describeSetupRequirement({
+        countUsersByRole: jest.fn(async () => 1),
+        fallbackOrigin: 'http://localhost:3080',
+      });
+
+      expect(announcement).toBeNull();
+    });
+
+    it('points an uninitialized deployment at its setup page', async () => {
+      const announcement = await describeSetupRequirement({
+        countUsersByRole: jest.fn(async () => 0),
+        fallbackOrigin: 'http://localhost:3080',
+      });
+
+      expect(announcement).toContain('http://localhost:3080/setup');
+    });
+
+    it('prefers the configured public origin and drops its trailing slash', async () => {
+      const announcement = await describeSetupRequirement({
+        countUsersByRole: jest.fn(async () => 0),
+        domainClient: 'https://chat.example.com/',
+        fallbackOrigin: 'http://localhost:3080',
+      });
+
+      expect(announcement).toContain('https://chat.example.com/setup');
+    });
+
+    /** A boot announcement is not allowed to be the reason a server refuses to start. */
+    it('stays silent when the administrator count cannot be read', async () => {
+      const announcement = await describeSetupRequirement({
+        countUsersByRole: jest.fn(async () => {
+          throw new Error('mongo down');
+        }),
+        fallbackOrigin: 'http://localhost:3080',
+      });
+
+      expect(announcement).toBeNull();
     });
   });
 });

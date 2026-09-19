@@ -58,6 +58,7 @@ const {
   createCodeApiUploadRegistry,
   cacheConfig,
   createClusteredFileSweep,
+  describeSetupRequirement,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -77,6 +78,7 @@ const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat
 const {
   getRoleByName,
   updateAccessPermissions,
+  countUsersByRole,
   seedDatabase,
   sweepOrphanedPreviews,
 } = require('~/models');
@@ -738,6 +740,18 @@ if (cluster.isMaster) {
         await initializeOAuthReconnectManager();
         await checkMigrations();
         await initializeAgentTriggerService({ address: server.address() });
+
+        /** One worker announces the deployment's state; every worker repeating it is noise. */
+        if (cluster.worker?.id === 1) {
+          const setupAnnouncement = await describeSetupRequirement({
+            countUsersByRole,
+            domainClient: process.env.DOMAIN_CLIENT,
+            fallbackOrigin: `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`,
+          });
+          if (setupAnnouncement != null) {
+            logger.warn(setupAnnouncement);
+          }
+        }
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);

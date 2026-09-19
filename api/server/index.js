@@ -63,12 +63,14 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  describeSetupRequirement,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
   getRoleByName,
+  countUsersByRole,
   seedDatabase,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -549,6 +551,15 @@ const startServer = async () => {
       }
       serverReady = true;
       logger.info('Server readiness checks passing.');
+
+      const setupAnnouncement = await describeSetupRequirement({
+        countUsersByRole,
+        domainClient: process.env.DOMAIN_CLIENT,
+        fallbackOrigin: `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`,
+      });
+      if (setupAnnouncement != null) {
+        logger.warn(setupAnnouncement);
+      }
     } catch (initErr) {
       serverReady = false;
       logger.error('Post-listen initialization failed:', initErr);

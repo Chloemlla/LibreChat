@@ -7,6 +7,7 @@ import {
   ApiErrorWatcher,
   TwoFactorScreen,
   RequestPasswordReset,
+  Setup,
 } from '~/components/Auth';
 import { MarketplaceProvider } from '~/components/Agents/MarketplaceContext';
 import AgentMarketplace from '~/components/Agents/Marketplace';
@@ -101,6 +102,10 @@ export const router = createBrowserRouter(
         {
           path: 'reset-password',
           element: <ResetPassword />,
+        },
+        {
+          path: 'setup',
+          element: <Setup />,
         },
       ],
     },

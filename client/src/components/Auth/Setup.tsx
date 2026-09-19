@@ -55,6 +55,7 @@ const Setup: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme } = useContext(ThemeContext);
   const { startupConfig } = useOutletContext<TLoginLayoutContext>();
+  const status = useSetupStatus();
 
   const {
     watch,
@@ -131,6 +132,17 @@ const Setup: React.FC = () => {
     navigate('/login', { replace: true });
   }, [isCreated, countdown, navigate, queryClient]);
 
+  /** Reached by URL, the page has to send an already-initialized deployment back to sign in
+   *  instead of offering a second administrator form. */
+  useEffect(() => {
+    if (isCreated) {
+      return;
+    }
+    if (status.data?.required === false || status.isError) {
+      navigate('/login', { replace: true });
+    }
+  }, [isCreated, status.data, status.isError, navigate]);
+
   if (isCreated) {
     return (
       <div className="mt-6 flex flex-col items-center gap-2" role="status">
@@ -142,6 +154,10 @@ const Setup: React.FC = () => {
         </p>
       </div>
     );
+  }
+
+  if (status.data?.required !== true) {
+    return null;
   }
 
   const renderError = (fieldName: keyof TSetupForm) => {
