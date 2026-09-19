@@ -143,8 +143,14 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
     }
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
-      const { disableBuilder, capabilities, allowedProviders, statefulCodeSessions, maxSubagents } =
-        appConfig.endpoints[EModelEndpoint.agents];
+      const {
+        disableBuilder,
+        capabilities,
+        allowedProviders,
+        statefulCodeSessions,
+        maxSubagents,
+        fileSharing,
+      } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
        * unmatched tool back to Ask/Deny. Explicit rules and hooks remain free to
@@ -186,6 +192,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         capabilities,
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
+        fileSharing,
       };
     }
 

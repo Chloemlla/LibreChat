@@ -266,6 +266,7 @@ describe('initializeMCPs', () => {
         {},
         {
           catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
         },
       );
     });
@@ -281,6 +282,7 @@ describe('initializeMCPs', () => {
 
       expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers, {
         catalogRecoveryMaxStateEntries: undefined,
+        catalogRecoveryMaxDetachedDiscoveries: undefined,
       });
     });
 
@@ -290,6 +292,7 @@ describe('initializeMCPs', () => {
         mcpSettings: {
           catalogRecovery: {
             maxStateEntries: 2500,
+            maxDetachedDiscoveries: 8,
             authorizationFenceRetryIntervalMs: 15_000,
             authorizationFenceRetryBatchSize: 250,
             authorizationFenceTimeoutMs: 750,
@@ -303,6 +306,7 @@ describe('initializeMCPs', () => {
         {},
         {
           catalogRecoveryMaxStateEntries: 2500,
+          catalogRecoveryMaxDetachedDiscoveries: 8,
         },
       );
       expect(mockStartMCPAuthorizationFenceRetryWorker).toHaveBeenCalledWith(
@@ -492,6 +496,7 @@ describe('initializeMCPs', () => {
         {},
         {
           catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
         },
       );
     });

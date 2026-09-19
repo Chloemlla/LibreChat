@@ -1,11 +1,22 @@
 import {
   ErrorTypes,
+  DEFAULT_MAX_PROVIDER_ERROR_CHARS,
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
+import { isOwnedAbortError } from '~/utils/errors';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
+
+const FATAL_AGENT_INITIALIZATION_CODES = new Set(
+  [
+    AGENT_ATTACHMENT_LIMIT_EXCEEDED,
+    ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+    ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED,
+    ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
+  ].filter((code): code is string => typeof code === 'string'),
+);
 
 export function createStatefulCodeEnvironmentPolicyError(environment: string): Error {
   return Object.assign(
@@ -19,6 +30,7 @@ export function createStatefulCodeEnvironmentPolicyError(environment: string): E
 }
 
 export interface FatalAgentInitializationOptions {
+  signal?: AbortSignal;
   /**
    * Skill `allowed-tools` may add an MCP tool beyond the agent's configured
    * baseline. That union load is allowed to retry without the skill extras;
@@ -46,10 +58,8 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    code === AGENT_ATTACHMENT_LIMIT_EXCEEDED ||
-    code === ErrorTypes.RESOURCE_RECOVERY_REQUIRED ||
-    code === ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED ||
-    code === ErrorTypes.CODE_WORKSPACE_UNAVAILABLE ||
+    isOwnedAbortError(error, options.signal) ||
+    FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
   );
 }
@@ -105,6 +115,34 @@ export function getUserFacingProviderError(error: unknown, protectionEnabled: bo
   return stripLangChainTroubleshootingUrl(error.message) || GENERIC_PROVIDER_ERROR;
 }
 
+/** Bounded lookahead covers LangChain's appended troubleshooting label and URL. */
+const TROUBLESHOOTING_LOOKAHEAD = 256;
+
+/**
+ * The provider's own words for a failure, or `undefined` when it has none to give. A gateway,
+ * proxy or OpenAI-compatible endpoint answers a rejection it alone can explain, and that sentence
+ * is more specific than any generic string we could write.
+ *
+ * Read defensively: an SDK error's `message` may be a hostile accessor or a body object rather
+ * than a string, and the docs URL LangChain stamps in is not for a reader.
+ */
+export function getProviderErrorMessage(
+  error: unknown,
+  maxChars: number = DEFAULT_MAX_PROVIDER_ERROR_CHARS,
+): string | undefined {
+  const raw =
+    error != null && typeof error === 'object' ? readErrorProperty(error, 'message') : error;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const limit =
+    Number.isSafeInteger(maxChars) && maxChars >= 0 ? maxChars : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+  const message = stripLangChainTroubleshootingUrl(raw.slice(0, limit + TROUBLESHOOTING_LOOKAHEAD))
+    .slice(0, limit)
+    .trim();
+  return message.length === 0 ? undefined : message;
+}
+
 /**
  * LangGraph's stable machine identifier for "the graph ran out of supersteps".
  * Set as `lc_error_code` on the `GraphRecursionError` thrown by the Pregel loop
@@ -114,6 +152,14 @@ const GRAPH_RECURSION_LIMIT_CODE = 'GRAPH_RECURSION_LIMIT';
 
 /** Bounded `cause` walk: a graph error may be rethrown wrapped by an outer node. */
 const MAX_CAUSE_DEPTH = 4;
+
+function readErrorProperty(error: object, property: PropertyKey): unknown {
+  try {
+    return Reflect.get(error, property);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Whether `error` is the agent graph exhausting its per-turn step budget
@@ -134,14 +180,13 @@ export function isStepLimitError(error: unknown): boolean {
     if (typeof current !== 'object') {
       return false;
     }
-    const candidate = current as { lc_error_code?: unknown; name?: unknown; cause?: unknown };
     if (
-      candidate.lc_error_code === GRAPH_RECURSION_LIMIT_CODE ||
-      candidate.name === 'GraphRecursionError'
+      readErrorProperty(current, 'lc_error_code') === GRAPH_RECURSION_LIMIT_CODE ||
+      readErrorProperty(current, 'name') === 'GraphRecursionError'
     ) {
       return true;
     }
-    current = candidate.cause;
+    current = readErrorProperty(current, 'cause');
   }
   return false;
 }

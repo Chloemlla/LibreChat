@@ -12,6 +12,9 @@ export enum QueryKeys {
   searchEnabled = 'searchEnabled',
   langfuseConnection = 'langfuseConnection',
   langfuseSessionLink = 'langfuseSessionLink',
+  conversationTraceAvailability = 'conversationTraceAvailability',
+  conversationTraceRecords = 'conversationTraceRecords',
+  conversationTraceRecord = 'conversationTraceRecord',
   user = 'user',
   name = 'name', // user key name
   models = 'models',
@@ -181,6 +184,7 @@ export enum MutationKeys {
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
+  moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
   upsertAdminConfig = 'upsertAdminConfig',
   patchAdminConfigFields = 'patchAdminConfigFields',
   tombstoneAdminConfigField = 'tombstoneAdminConfigField',

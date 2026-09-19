@@ -64,6 +64,21 @@ describe('MCP OAuth flow state across Redis-backed instances', () => {
     );
   });
 
+  it('preserves a retryable handler failure across Redis pods', async () => {
+    const flowId = createFlowId();
+    await podA.initFlow(flowId, FLOW_TYPE);
+    const flow = await podA.getFlowState(flowId, FLOW_TYPE);
+    const waiter = podB.createFlowWithHandler(flowId, FLOW_TYPE, async () => 'unexpected');
+    const error = new Error('refresh lease unavailable');
+    error.name = 'MCPTokenRefreshUnavailableError';
+    await podA.failFlowIfCurrent(flowId, FLOW_TYPE, flow!.createdAt, '', error);
+    await expect(waiter).rejects.toMatchObject({ name: error.name, message: error.message });
+    expect(await podB.getFlowState(flowId, FLOW_TYPE)).toMatchObject({
+      error: error.message,
+      errorName: error.name,
+    });
+  });
+
   it('retains a terminal OAuth failure for polling on another pod', async () => {
     const flowId = createFlowId();
 
@@ -124,6 +139,61 @@ describe('MCP OAuth flow state across Redis-backed instances', () => {
       expect.objectContaining({ status: 'COMPLETED', result: 'fresh-result' }),
     );
   });
+
+  it('runs one handler when two pods replace the same failed non-retained flow', async () => {
+    const flowId = createFlowId();
+    const type = 'mcp_get_tokens';
+    try {
+      await expect(
+        podA.createFlowWithHandler(flowId, type, async () => {
+          throw new Error('earlier attempt failed');
+        }),
+      ).rejects.toThrow('earlier attempt failed');
+      const first = jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return 'first';
+      });
+      const second = jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return 'second';
+      });
+
+      const results = await Promise.all([
+        podA.createFlowWithHandler(flowId, type, first),
+        podB.createFlowWithHandler(flowId, type, second),
+      ]);
+
+      expect(new Set(results).size).toBe(1);
+      expect(first.mock.calls.length + second.mock.calls.length).toBe(1);
+    } finally {
+      await podA.deleteFlow(flowId, type);
+    }
+  }, 15000);
+
+  it('runs one handler when two pods create the same absent flow', async () => {
+    const flowId = createFlowId();
+    const type = 'mcp_get_tokens';
+    try {
+      const first = jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return 'first';
+      });
+      const second = jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return 'second';
+      });
+
+      const results = await Promise.all([
+        podA.createFlowWithHandler(flowId, type, first),
+        podB.createFlowWithHandler(flowId, type, second),
+      ]);
+
+      expect(new Set(results).size).toBe(1);
+      expect(first.mock.calls.length + second.mock.calls.length).toBe(1);
+    } finally {
+      await podA.deleteFlow(flowId, type);
+    }
+  }, 15000);
 
   it('settles a fresher result over a failure from the same attempt across pods', async () => {
     const flowId = createFlowId();

@@ -69,6 +69,7 @@ export async function loadDefaultInterface({
      *  (`removeNullishValues` drops the key) and both sides read it as "no figure
      *  renderer" rather than as an empty origin. */
     geogebraOrigin: interfaceConfig?.geogebraOrigin,
+    traceViewer: interfaceConfig?.traceViewer,
     defaultPinnedTools: interfaceConfig?.defaultPinnedTools,
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,
