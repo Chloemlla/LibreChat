@@ -14,7 +14,15 @@ type AnyObject = { [key: string]: unknown };
 
 const MAX_MERGE_DEPTH = 10;
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-/** Filters are a fail-closed security boundary even during mixed-package rollouts. */
+/**
+ * Sections that no config document may override or tombstone, including the tenant's base
+ * document. Distinct from `BASE_PRINCIPAL_OVERRIDE_SECTIONS`, which the base principal may
+ * still write.
+ *
+ * `filters` is repeated from `BASE_ONLY_CONFIG_SECTIONS` deliberately: this is a second,
+ * independent declaration of the inspection boundary, so the merge keeps refusing a stored
+ * rule set even if the shared constant stops listing it.
+ */
 const BASE_ONLY_OVERRIDE_SECTIONS = new Set<string>(['filters', ...BASE_ONLY_CONFIG_SECTIONS]);
 const BASE_PRINCIPAL_OVERRIDE_SECTIONS = new Set<string>(BASE_PRINCIPAL_CONFIG_SECTIONS);
 
@@ -291,6 +299,9 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
   let merged = { ...baseConfig };
   for (const config of sorted) {
     const isBasePrincipal = config.principalId?.toString() === BASE_CONFIG_PRINCIPAL_ID;
+    // Two tiers, as in the overrides loop below: a base-only section is withheld from every
+    // document including the base principal's, while a base-principal section is only
+    // withheld from the rest.
     if (Array.isArray(config.tombstones)) {
       for (const path of config.tombstones) {
         if (
@@ -306,6 +317,9 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
     if (config.overrides && typeof config.overrides === 'object') {
       const remapped: AnyObject = {};
       for (const [key, value] of Object.entries(config.overrides)) {
+        // Base-only sections are deployment-level for every document, the base principal's
+        // included; base-principal sections are tenant-wide values that only the base
+        // principal may write and no role, group or user document may outrank.
         if (
           BASE_ONLY_OVERRIDE_SECTIONS.has(key) ||
           (!isBasePrincipal && BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(key))

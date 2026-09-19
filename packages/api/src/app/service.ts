@@ -7,8 +7,25 @@ import {
 } from '@librechat/data-schemas';
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
+import type {
+  ConfigInvalidationChannelOptions,
+  ConfigInvalidationRequest,
+} from '~/cache/invalidation';
+import { createConfigInvalidationChannel } from '~/cache/invalidation';
+import { registerShutdownTask } from './shutdown';
 
 const BASE_CONFIG_KEY = '_BASE_';
+
+/**
+ * The config a `baseOnly` caller reads: the YAML base with only the `__base__`
+ * override document folded in. Cached separately from {@link BASE_CONFIG_KEY} —
+ * that entry stays pure YAML + process so the per-principal merge can keep
+ * ordering the `__base__` document by priority against every other document
+ * instead of treating it as a floor.
+ */
+const BASE_EFFECTIVE_CONFIG_KEY = '_BASE_EFFECTIVE_';
+
+const OVERRIDE_CACHE_PREFIX = '_OVERRIDE_:';
 
 export type AppConfigPrincipal = {
   principalType: string;
@@ -18,8 +35,8 @@ export type AppConfigPrincipal = {
 /**
  * Materializes inferable model-spec fields (an omitted `preset.endpoint` for
  * agent specs) so every consumer of the effective config reads complete specs.
- * Runs at both assembly points — YAML base load and DB-override merge — because
- * override documents contribute specs the base config never saw.
+ * Runs at every assembly point — the YAML base load and each DB-override merge —
+ * because override documents contribute specs the base config never saw.
  */
 function materializeConfigModelSpecs(config: AppConfig): AppConfig {
   const modelSpecs = materializeModelSpecEndpoints(config.modelSpecs);
@@ -69,6 +86,12 @@ export interface AppConfigServiceDeps {
     principals: AppConfigPrincipal[];
     options: GetAppConfigOptions;
   }) => Promise<AppConfig>;
+  /**
+   * Cross-instance invalidation for deployments that share a pub/sub bus.
+   * Omitted when the config caches are process-local — a single instance has no
+   * peers to notify, and nothing is subscribed on its behalf.
+   */
+  invalidation?: ConfigInvalidationChannelOptions;
   /** TTL in ms for per-user/role merged config caches. Defaults to 60 000. */
   overrideCacheTtl?: number;
 }
@@ -144,6 +167,17 @@ function overrideCacheKey(role?: string, userId?: string, tenantId?: string): st
   return `_OVERRIDE_:${tenant}:${BASE_CONFIG_PRINCIPAL_ID}`;
 }
 
+/**
+ * Tenant-scoped for the same reason as {@link overrideCacheKey}: the Config
+ * collection enforces tenant isolation on every query, so `__base__` is one
+ * document *per tenant* and a shared entry would hand one tenant's deployment
+ * config to another's auth paths.
+ */
+function baseEffectiveConfigKey(tenantId?: string): string {
+  const tenant = tenantId || getTenantId() || '__default__';
+  return `${BASE_EFFECTIVE_CONFIG_KEY}:${tenant}`;
+}
+
 // ── Service factory ──────────────────────────────────────────────────
 
 export function createAppConfigService(deps: AppConfigServiceDeps): {
@@ -159,10 +193,13 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     getApplicableConfigs,
     getUserPrincipals,
     augmentConfig,
+    invalidation,
     overrideCacheTtl = DEFAULT_OVERRIDE_CACHE_TTL,
   } = deps;
 
   const cache = getCache(cacheKeys.APP_CONFIG);
+  const invalidationChannel =
+    invalidation == null ? null : createConfigInvalidationChannel(invalidation);
 
   async function buildPrincipals(
     role?: string,
@@ -212,15 +249,69 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
   }
 
   /**
+   * Resolve the config read by `baseOnly` callers: the YAML base with only the
+   * `__base__` override document merged in.
+   *
+   * The DB read happens once per `overrideCacheTtl`, not per call. `baseOnly` is
+   * on per-request paths (auth strategies, turnstile validation), and going to
+   * the DB on each of them would trade the wrong way for a document that changes
+   * only when an operator saves config.
+   */
+  async function resolveBaseEffectiveConfig(
+    baseConfig: AppConfig,
+    options: { tenantId?: string; refresh?: boolean; failClosed?: boolean },
+  ): Promise<AppConfig> {
+    const { tenantId, refresh, failClosed } = options;
+
+    // Same pathological-scope guard as the principal path: with no tenant anywhere the
+    // query is unscoped across every tenant, which strict isolation forbids. Return the
+    // YAML base without caching it under the shared `__default__` bucket.
+    if (!tenantId && !getTenantId() && isStrictOverrideMode()) {
+      return baseConfig;
+    }
+
+    const cacheKey = baseEffectiveConfigKey(tenantId);
+    if (!refresh) {
+      const cached = (await cache.get(cacheKey)) as AppConfig | undefined;
+      if (cached) {
+        return cached;
+      }
+    }
+
+    let effective = baseConfig;
+    try {
+      // `getApplicableConfigs` appends the base principal to every query, so an
+      // empty principal list asks for exactly the `__base__` document — the only
+      // one this read may fold in. Per-principal documents stay out of this path
+      // so a `baseOnly` caller cannot observe one user's overrides.
+      const configs = await getApplicableConfigs([]);
+      if (configs.length > 0) {
+        effective = materializeConfigModelSpecs(mergeConfigOverrides(baseConfig, configs));
+      }
+    } catch (error) {
+      if (failClosed) throw error;
+      logger.error(
+        '[getAppConfig] Error resolving base config overrides, falling back to base:',
+        error,
+      );
+      return baseConfig;
+    }
+
+    await cache.set(cacheKey, effective, overrideCacheTtl);
+    return effective;
+  }
+
+  /**
    * Get the app configuration, optionally merged with DB overrides for the given principal.
    *
    * The base config (from YAML + AppService) is cached indefinitely. Per-principal merged
    * configs are cached with a short TTL (`overrideCacheTtl`, default 60s). On cache miss,
    * `getApplicableConfigs` queries the DB for matching overrides and merges them by priority.
    *
-   * When `baseOnly` is true, returns the YAML-derived config without any DB queries.
-   * `role`, `userId`, and `tenantId` are ignored in this mode.
-   * Use this for startup, auth strategies, and other pre-tenant code paths.
+   * When `baseOnly` is true, returns the deployment-level config — the YAML base plus the
+   * `__base__` override document — cached per tenant under the same TTL. `role` and `userId`
+   * are ignored in this mode: the callers are startup, auth strategies, and other pre-tenant
+   * code paths that must not read one principal's overrides.
    */
   async function getAppConfig(options: GetAppConfigOptions = {}): Promise<AppConfig> {
     const {
@@ -238,7 +329,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     const baseConfig = await ensureBaseConfig(refresh);
 
     if (baseOnly) {
-      return baseConfig;
+      return await resolveBaseEffectiveConfig(baseConfig, { tenantId, refresh, failClosed });
     }
 
     const principals =
@@ -305,13 +396,54 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
   }
 
   /**
-   * Clear the base config cache. Per-user/role override caches (`_OVERRIDE_:*`)
-   * are NOT flushed — they expire naturally via `overrideCacheTtl`. After calling this,
-   * the base config will be reloaded from YAML on the next `getAppConfig` call, but
-   * users with cached overrides may see stale merged configs for up to `overrideCacheTtl` ms.
+   * Deletes every entry whose key starts with `segment`.
+   *
+   * In-memory store — enumerate keys directly. APP_CONFIG defaults to
+   * FORCED_IN_MEMORY_CACHE_NAMESPACES, so this is the standard path. Redis SCAN is
+   * intentionally avoided here — it can cause 60s+ stalls under concurrent load
+   * (see #12410). Returns `null` when the store cannot enumerate, leaving the
+   * entries to expire via TTL.
    */
-  async function clearAppConfigCache(): Promise<void> {
+  async function deleteCacheFamily(segment: string): Promise<number | null> {
+    const namespace = cacheKeys.APP_CONFIG;
+    const store = (cache as CacheStore).opts?.store;
+    if (store == null || typeof store.keys !== 'function') {
+      return null;
+    }
+    // Keyv stores keys with a namespace prefix (e.g. "APP_CONFIG:_OVERRIDE_:...").
+    // We match on the namespaced key but delete using the un-namespaced key
+    // because Keyv.delete() auto-prepends the namespace.
+    const namespacedPrefix = `${namespace}:${segment}`;
+    const toDelete: string[] = [];
+    for (const key of store.keys()) {
+      if (key.startsWith(namespacedPrefix)) {
+        toDelete.push(key.slice(namespace.length + 1));
+      }
+    }
+    if (toDelete.length === 0) {
+      return 0;
+    }
+    await Promise.all(toDelete.map((key) => cache.delete(key)));
+    return toDelete.length;
+  }
+
+  /**
+   * Drop this process's base config: the YAML entry and every tenant's merged
+   * `_BASE_EFFECTIVE_` entry over it. Per-user/role override caches (`_OVERRIDE_:*`)
+   * are NOT flushed here — they expire naturally via `overrideCacheTtl`, and
+   * `invalidateConfigCaches` clears them alongside this. Users with cached overrides
+   * may keep a stale merged config for up to `overrideCacheTtl` ms.
+   */
+  async function clearLocalBaseConfig(): Promise<void> {
     await cache.delete(BASE_CONFIG_KEY);
+    const cleared = await deleteCacheFamily(`${BASE_EFFECTIVE_CONFIG_KEY}:`);
+    if (cleared == null) {
+      logger.warn(
+        '[clearAppConfigCache] Cache store does not support key enumeration. ' +
+          'Merged base configs will expire naturally via TTL (%dms).',
+        overrideCacheTtl,
+      );
+    }
   }
 
   /**
@@ -319,44 +451,51 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * matching `_OVERRIDE_:${tenantId}:*` are deleted. When omitted, ALL override
    * caches are cleared.
    */
-  async function clearOverrideCache(tenantId?: string): Promise<void> {
-    const namespace = cacheKeys.APP_CONFIG;
-    const overrideSegment = tenantId ? `_OVERRIDE_:${tenantId}:` : '_OVERRIDE_:';
-
-    // In-memory store — enumerate keys directly.
-    // APP_CONFIG defaults to FORCED_IN_MEMORY_CACHE_NAMESPACES, so this is the
-    // standard path. Redis SCAN is intentionally avoided here — it can cause 60s+
-    // stalls under concurrent load (see #12410). When APP_CONFIG is Redis-backed
-    // and store.keys() is unavailable, overrides expire naturally via TTL.
-    const store = (cache as CacheStore).opts?.store;
-    if (store && typeof store.keys === 'function') {
-      // Keyv stores keys with a namespace prefix (e.g. "APP_CONFIG:_OVERRIDE_:...").
-      // We match on the namespaced key but delete using the un-namespaced key
-      // because Keyv.delete() auto-prepends the namespace.
-      const namespacedPrefix = `${namespace}:${overrideSegment}`;
-      const toDelete: string[] = [];
-      for (const key of store.keys()) {
-        if (key.startsWith(namespacedPrefix)) {
-          toDelete.push(key.slice(namespace.length + 1));
-        }
-      }
-      if (toDelete.length > 0) {
-        await Promise.all(toDelete.map((key) => cache.delete(key)));
-        logger.info(
-          `[clearOverrideCache] Cleared ${toDelete.length} override cache entries` +
-            (tenantId ? ` for tenant ${tenantId}` : ''),
-        );
-      }
+  async function clearLocalOverrideCache(tenantId?: string): Promise<void> {
+    const segment = tenantId ? `${OVERRIDE_CACHE_PREFIX}${tenantId}:` : OVERRIDE_CACHE_PREFIX;
+    const cleared = await deleteCacheFamily(segment);
+    if (cleared == null) {
+      logger.warn(
+        '[clearOverrideCache] Cache store does not support key enumeration. ' +
+          'Override caches will expire naturally via TTL (%dms). ' +
+          'This is expected when APP_CONFIG is Redis-backed — Redis SCAN is avoided ' +
+          'for performance reasons (see #12410).',
+        overrideCacheTtl,
+      );
       return;
     }
+    if (cleared > 0) {
+      logger.info(
+        `[clearOverrideCache] Cleared ${cleared} override cache entries` +
+          (tenantId ? ` for tenant ${tenantId}` : ''),
+      );
+    }
+  }
 
-    logger.warn(
-      '[clearOverrideCache] Cache store does not support key enumeration. ' +
-        'Override caches will expire naturally via TTL (%dms). ' +
-        'This is expected when APP_CONFIG is Redis-backed — Redis SCAN is avoided ' +
-        'for performance reasons (see #12410).',
-      overrideCacheTtl,
-    );
+  /** Applies an invalidation issued by another instance to this process's caches. */
+  async function applyPeerInvalidation(request: ConfigInvalidationRequest): Promise<void> {
+    if (request.scope === 'base') {
+      await clearLocalBaseConfig();
+      return;
+    }
+    await clearLocalOverrideCache(request.tenantId);
+  }
+
+  async function clearAppConfigCache(): Promise<void> {
+    await clearLocalBaseConfig();
+    await invalidationChannel?.broadcast('base');
+  }
+
+  async function clearOverrideCache(tenantId?: string): Promise<void> {
+    await clearLocalOverrideCache(tenantId);
+    await invalidationChannel?.broadcast('overrides', tenantId);
+  }
+
+  invalidationChannel?.start(applyPeerInvalidation);
+
+  if (invalidationChannel != null) {
+    /** The subscriber is a dedicated connection that nothing else closes. */
+    registerShutdownTask('app config invalidation', () => invalidationChannel.stop());
   }
 
   return {

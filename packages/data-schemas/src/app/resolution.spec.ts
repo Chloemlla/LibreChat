@@ -69,6 +69,40 @@ describe('mergeConfigOverrides', () => {
     expect(mergeConfigOverrides(base, configs).filters).toEqual(base.filters);
   });
 
+  it('keeps base-only filters closed to the base principal as well', () => {
+    const base = {
+      filters: {
+        files: {
+          pii: {
+            fields: ['content'],
+            starterPatterns: [],
+            uninspectable: 'block',
+          },
+        },
+      },
+    } as unknown as AppConfig;
+    const configs = [
+      fakeConfig(
+        {
+          filters: {
+            files: {
+              pii: {
+                fields: ['content'],
+                starterPatterns: [],
+                uninspectable: 'allow',
+              },
+            },
+          },
+        },
+        10,
+        ['filters.files.pii'],
+        BASE_CONFIG_PRINCIPAL_ID,
+      ),
+    ];
+
+    expect(mergeConfigOverrides(base, configs).filters).toEqual(base.filters);
+  });
+
   it('applies tenant-wide Langfuse settings only from the base principal', () => {
     const configs = [
       fakeConfig(

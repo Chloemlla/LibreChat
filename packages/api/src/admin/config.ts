@@ -35,8 +35,17 @@ import {
 const UNSAFE_SEGMENTS = /(?:^|\.)(__[\w]*|constructor|prototype)(?:\.|$)/;
 const MAX_PATCH_ENTRIES = 100;
 const DEFAULT_PRIORITY = 10;
+/**
+ * Sections the read path discards from a stored document. Refusing them on write keeps the two
+ * sides in agreement, so a stored document never holds a value the merge would then ignore.
+ */
 const BASE_ONLY_OVERRIDE_SECTIONS = new Set<string>(BASE_ONLY_CONFIG_SECTIONS);
 const BASE_PRINCIPAL_OVERRIDE_SECTIONS = new Set<string>(BASE_PRINCIPAL_CONFIG_SECTIONS);
+/**
+ * A process-backed (stdio) server config names a command, its arguments and its environment,
+ * so storing one would turn a runtime admin capability into code execution on the host. Only
+ * the deployment's own config file may name one.
+ */
 const PROCESS_MCP_CONFIG_ERROR =
   'Process-backed MCP servers can only be configured in librechat.yaml';
 const LANGFUSE_HEADERS_CONFIG_ERROR =

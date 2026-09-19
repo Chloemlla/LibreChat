@@ -53,6 +53,19 @@ export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'd
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Sections held at deployment level: no stored config document may set or tombstone them,
+ * not even the tenant's base document.
+ *
+ * `filters` is excluded by policy, not by capability — `customPatterns[].regex` is a plain
+ * string, so the section stores fine. It stays out because content inspection fails open by
+ * construction: a source with no rule is a source that is not inspected, so an omitted or
+ * emptied source is a valid-looking document that silently removes a rule. The merged config
+ * the enforcement points read is also assembled without re-validating `filters`, which means
+ * a stored rule set is honored only as far as the reading package version understands it.
+ * Replicas that disagree about an inspection boundary cannot be certified, and a stored
+ * document outlives the deploy that wrote it — so the exclusion covers the base principal.
+ */
 export const BASE_ONLY_CONFIG_SECTIONS = ['filters'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */

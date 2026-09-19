@@ -3,12 +3,14 @@ const { CacheKeys } = require('librechat-data-provider');
 const { AppService, logger } = require('@librechat/data-schemas');
 const {
   applyMCPBootConfig,
-  createAppConfigService,
-  clearMcpConfigCache,
-  createCodeEnvironmentRegistry,
-  mergeAccessibleCodeEnvironments,
   cacheConfig,
   standardCache,
+  ioredisClient,
+  createAppConfigService,
+  clearMcpConfigCache,
+  createIoRedisSubscriber,
+  createCodeEnvironmentRegistry,
+  mergeAccessibleCodeEnvironments,
 } = require('@librechat/api');
 const { setCachedTools, invalidateCachedTools } = require('./getCachedTools');
 const { loadAndFormatTools } = require('~/server/services/start/tools');
@@ -46,6 +48,24 @@ const loadBaseConfig = async () => {
   return AppService({ config, paths, systemTools });
 };
 
+/**
+ * Cross-instance config invalidation. The APP_CONFIG namespace is deliberately
+ * forced to per-process memory, so without a broadcast a config saved on one
+ * replica leaves its peers serving the old value — indefinitely for the base
+ * config, which is cached without a TTL. Absent when USE_REDIS is off: a single
+ * instance has no peers, and no subscriber connection is opened on its behalf.
+ */
+const configInvalidation =
+  ioredisClient == null
+    ? undefined
+    : {
+        bus: ioredisClient,
+        createSubscriber: () =>
+          createIoRedisSubscriber(ioredisClient, '[ConfigInvalidation] subscriber'),
+        throttleMs: cacheConfig.CONFIG_INVALIDATION_THROTTLE_MS,
+        dedupeLimit: cacheConfig.CONFIG_INVALIDATION_DEDUPE_LIMIT,
+      };
+
 const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfigService({
   loadBaseConfig,
   setCachedTools,
@@ -53,6 +73,7 @@ const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfi
   cacheKeys: CacheKeys,
   getApplicableConfigs: db.getApplicableConfigs,
   getUserPrincipals: db.getUserPrincipals,
+  invalidation: configInvalidation,
   augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
     if (!options.userId) return appConfig;
     return mergeAccessibleCodeEnvironments({

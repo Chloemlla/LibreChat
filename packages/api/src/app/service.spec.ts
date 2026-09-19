@@ -1,9 +1,11 @@
 import type { AppConfig } from '@librechat/data-schemas';
+import type { ConfigInvalidationChannelOptions } from '~/cache/invalidation';
 import {
   createAppConfigService,
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
+import { CONFIG_INVALIDATION_CHANNEL } from '~/cache/invalidation';
 
 /** Extends AppConfig with mock fields used by merge behavior tests. */
 interface TestConfig extends AppConfig {
@@ -56,6 +58,63 @@ function createDeps(overrides = {}) {
   };
 }
 
+/** Stand-in for a deployment's pub/sub bus, so a test can both emit peer events
+ *  and observe what this instance broadcast. */
+function createInvalidationHarness({ throttleMs = 0 } = {}) {
+  const published: Array<{ channel: string; payload: string }> = [];
+  const listeners: Array<(channel: string, payload: string) => void> = [];
+  let peerMessageId = 0;
+
+  const subscriber = {
+    subscribe: jest.fn().mockResolvedValue(1),
+    on: jest.fn((event: string, listener: (channel: string, payload: string) => void) => {
+      if (event === 'message') {
+        listeners.push(listener);
+      }
+    }),
+    disconnect: jest.fn(),
+  };
+
+  const bus = {
+    publish: jest.fn(async (channel: string, payload: string) => {
+      published.push({ channel, payload });
+      return 1;
+    }),
+  };
+
+  const deliverRaw = (payload: string) => {
+    for (const listener of listeners) {
+      listener(CONFIG_INVALIDATION_CHANNEL, payload);
+    }
+  };
+
+  const config: ConfigInvalidationChannelOptions = {
+    bus,
+    createSubscriber: () => subscriber,
+    throttleMs,
+    dedupeLimit: 8,
+  };
+
+  return {
+    bus,
+    subscriber,
+    published,
+    config,
+    deliverRaw,
+    deliverPeer: (request: { scope: 'base' | 'overrides'; tenantId?: string }) => {
+      peerMessageId += 1;
+      deliverRaw(
+        JSON.stringify({ messageId: `peer-${peerMessageId}`, originId: 'peer', ...request }),
+      );
+    },
+  };
+}
+
+/** Lets a queued invalidation batch flush. */
+function settleInvalidations(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 40));
+}
+
 describe('createAppConfigService', () => {
   describe('getAppConfig', () => {
     it('loads base config on first call', async () => {
@@ -78,21 +137,136 @@ describe('createAppConfigService', () => {
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
     });
 
-    it('baseOnly returns YAML config without DB queries', async () => {
+    it('baseOnly folds in the deployment-wide overrides without resolving principals', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          {
+            priority: 10,
+            isActive: true,
+            principalId: '__base__',
+            overrides: { interface: { modelSelect: false } },
+          },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ baseOnly: true, role: 'ADMIN', userId: 'uid1' });
+
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+      expect(deps.getUserPrincipals).not.toHaveBeenCalled();
+      /** An empty principal list is the request for the `__base__` document alone:
+       *  a pre-tenant caller must never observe one principal's overrides. */
+      expect(deps.getApplicableConfigs).toHaveBeenCalledWith([]);
+      expect((config as TestConfig).interfaceConfig?.modelSelect).toBe(false);
+    });
+
+    it('baseOnly leaves the `_BASE_` entry free of deployment overrides', async () => {
       const deps = createDeps({
         getApplicableConfigs: jest
           .fn()
-          .mockResolvedValue([
-            { priority: 10, overrides: { interface: { modelSelect: false } }, isActive: true },
+          .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'base-doc' } }]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = (await getAppConfig({ baseOnly: true })) as TestConfig;
+
+      expect(config.x).toBe('base-doc');
+      /** The merge is cached beside the base, never inside it: pre-folding the
+       *  `__base__` document would make it a floor, and a per-principal document
+       *  with a LOWER priority could no longer be outranked by it. */
+      expect(deps._cache._store.get('app_config:_BASE_')).toEqual(deps._baseConfig);
+      expect(deps._cache._store.get('app_config:_BASE_EFFECTIVE_:__default__')).toEqual(
+        expect.objectContaining({ x: 'base-doc' }),
+      );
+    });
+
+    it('scopes the deployment config to the tenant that produced it', async () => {
+      const { tenantStorage, getTenantId } = jest.requireActual('@librechat/data-schemas');
+      const deps = createDeps({
+        /** Each tenant's `__base__` document supplies its own marker. */
+        getApplicableConfigs: jest
+          .fn()
+          .mockImplementation(async () => [
+            { priority: 10, isActive: true, overrides: { whoami: getTenantId() } },
           ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const configA = (await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        getAppConfig({ baseOnly: true }),
+      )) as TestConfig & { whoami?: string };
+      const configB = (await tenantStorage.run({ tenantId: 'tenant-b' }, async () =>
+        getAppConfig({ baseOnly: true }),
+      )) as TestConfig & { whoami?: string };
+
+      expect(configA.whoami).toBe('tenant-a');
+      expect(configB.whoami).toBe('tenant-b');
+      // A shared entry would short-circuit the second tenant's DB read.
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps ordering the `__base__` document by priority for scoped readers', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          { priority: 1, isActive: true, principalId: '__base__', overrides: { x: 'base' } },
+          { priority: 100, isActive: true, principalId: 'ADMIN', overrides: { x: 'principal' } },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = (await getAppConfig({ role: 'ADMIN' })) as TestConfig;
+
+      expect(config.x).toBe('principal');
+    });
+
+    it('serves the deployment config from cache instead of re-reading the DB', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'base-doc' } }]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await getAppConfig({ baseOnly: true });
+      await getAppConfig({ baseOnly: true });
+
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads the deployment config when refresh is true', async () => {
+      const getApplicableConfigs = jest
+        .fn()
+        .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'first' } }]);
+      const deps = createDeps({ getApplicableConfigs });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await getAppConfig({ baseOnly: true });
+      getApplicableConfigs.mockResolvedValueOnce([
+        { priority: 10, isActive: true, overrides: { x: 'second' } },
+      ]);
+      const refreshed = (await getAppConfig({ baseOnly: true, refresh: true })) as TestConfig;
+
+      expect(getApplicableConfigs).toHaveBeenCalledTimes(2);
+      expect(refreshed.x).toBe('second');
+    });
+
+    it('falls back to the YAML base when the deployment override read fails', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest.fn().mockRejectedValue(new Error('DB down')),
       });
       const { getAppConfig } = createAppConfigService(deps);
 
       const config = await getAppConfig({ baseOnly: true });
 
-      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
-      expect(deps.getApplicableConfigs).not.toHaveBeenCalled();
       expect(config).toEqual(deps._baseConfig);
+    });
+
+    it('propagates deployment override failures for fail-closed callers', async () => {
+      const error = new Error('override authorization unavailable');
+      const deps = createDeps({ getApplicableConfigs: jest.fn().mockRejectedValue(error) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ baseOnly: true, failClosed: true })).rejects.toBe(error);
     });
 
     it('reloads base config when refresh is true', async () => {
@@ -621,6 +795,27 @@ describe('createAppConfigService', () => {
       await getAppConfig();
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
     });
+
+    it('drops every tenant entry so baseOnly re-reads the DB', async () => {
+      const { tenantStorage } = jest.requireActual('@librechat/data-schemas');
+      const getApplicableConfigs = jest
+        .fn()
+        .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'base-doc' } }]);
+      const deps = createDeps({ getApplicableConfigs });
+      const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        getAppConfig({ baseOnly: true }),
+      );
+      expect(getApplicableConfigs).toHaveBeenCalledTimes(1);
+
+      await clearAppConfigCache();
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        getAppConfig({ baseOnly: true }),
+      );
+      expect(getApplicableConfigs).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('clearOverrideCache', () => {
@@ -686,6 +881,156 @@ describe('createAppConfigService', () => {
 
       // Should not throw — logs warning and relies on TTL expiry
       await expect(clearOverrideCache()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('cross-instance invalidation', () => {
+    it('broadcasts a base invalidation to peers', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({ invalidation: harness.config });
+      const { clearAppConfigCache } = createAppConfigService(deps);
+
+      await clearAppConfigCache();
+
+      expect(harness.published).toHaveLength(1);
+      expect(harness.published[0].channel).toBe(CONFIG_INVALIDATION_CHANNEL);
+      expect(JSON.parse(harness.published[0].payload)).toEqual(
+        expect.objectContaining({ scope: 'base' }),
+      );
+    });
+
+    it('scopes an override broadcast to the tenant being cleared', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({ invalidation: harness.config });
+      const { clearOverrideCache } = createAppConfigService(deps);
+
+      await clearOverrideCache('tenant-a');
+
+      expect(JSON.parse(harness.published[0].payload)).toEqual(
+        expect.objectContaining({ scope: 'overrides', tenantId: 'tenant-a' }),
+      );
+    });
+
+    it('still clears locally when the broadcast fails', async () => {
+      const harness = createInvalidationHarness();
+      harness.bus.publish.mockRejectedValueOnce(new Error('redis down'));
+      const deps = createDeps({
+        invalidation: harness.config,
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'base-doc' } }]),
+      });
+      const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+
+      await expect(clearAppConfigCache()).resolves.toBeUndefined();
+
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies a peer base invalidation to this instance', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({
+        invalidation: harness.config,
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 'base-doc' } }]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+
+      harness.deliverPeer({ scope: 'base' });
+      await settleInvalidations();
+
+      // Both the YAML base and the deployment merge over it are gone.
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies a peer override invalidation only for the named tenant', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({
+        invalidation: harness.config,
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([{ priority: 10, isActive: true, overrides: { x: 1 } }]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ role: 'ADMIN', tenantId: 'tenant-a' });
+      await getAppConfig({ role: 'ADMIN', tenantId: 'tenant-b' });
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+
+      harness.deliverPeer({ scope: 'overrides', tenantId: 'tenant-a' });
+      await settleInvalidations();
+
+      await getAppConfig({ role: 'ADMIN', tenantId: 'tenant-a' });
+      await getAppConfig({ role: 'ADMIN', tenantId: 'tenant-b' });
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(3);
+    });
+
+    it('ignores its own broadcast echo', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({ invalidation: harness.config });
+      const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+      await clearAppConfigCache();
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+
+      // Redis delivers a published message back to the publishing connection.
+      harness.deliverRaw(harness.published[0].payload);
+      await settleInvalidations();
+
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies a redelivered peer event once', async () => {
+      const harness = createInvalidationHarness({ throttleMs: 10 });
+      const deps = createDeps({ invalidation: harness.config });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+
+      const payload = JSON.stringify({ messageId: 'm-1', originId: 'peer', scope: 'base' });
+      harness.deliverRaw(payload);
+      await settleInvalidations();
+      harness.deliverRaw(payload);
+      await settleInvalidations();
+
+      await getAppConfig({ baseOnly: true });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it('collapses a burst of peer events into a single cache clear', async () => {
+      const harness = createInvalidationHarness({ throttleMs: 10 });
+      const deps = createDeps({ invalidation: harness.config });
+      createAppConfigService(deps);
+      deps._cache.delete.mockClear();
+
+      harness.deliverPeer({ scope: 'base' });
+      harness.deliverPeer({ scope: 'base' });
+      harness.deliverPeer({ scope: 'base' });
+      await settleInvalidations();
+
+      /** One apply drops the two base keys; three applies would drop six. */
+      expect(deps._cache.delete).toHaveBeenCalledTimes(2);
+    });
+
+    it('ignores a payload that is not an invalidation event', async () => {
+      const harness = createInvalidationHarness();
+      const deps = createDeps({ invalidation: harness.config });
+      createAppConfigService(deps);
+      deps._cache.delete.mockClear();
+
+      harness.deliverRaw('not json');
+      harness.deliverRaw(JSON.stringify({ scope: 'base' }));
+      await settleInvalidations();
+
+      expect(deps._cache.delete).not.toHaveBeenCalled();
     });
   });
 });

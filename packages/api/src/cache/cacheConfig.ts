@@ -161,6 +161,19 @@ const cacheConfig: {
    * @default 5000 (5 seconds)
    */
   MCP_REGISTRY_CACHE_TTL: number;
+  /**
+   * Coalescing window in ms for cross-instance config-cache invalidation. Peer
+   * events arriving inside one window are applied together, so a burst of admin
+   * saves costs a peer instance one cache clear rather than one per save.
+   * @default 250
+   */
+  CONFIG_INVALIDATION_THROTTLE_MS: number;
+  /**
+   * How many recently applied config-invalidation message ids an instance
+   * remembers, so a redelivery of the same event is not applied twice.
+   * @default 256
+   */
+  CONFIG_INVALIDATION_DEDUPE_LIMIT: number;
 } = {
   FORCED_IN_MEMORY_CACHE_NAMESPACES,
   USE_REDIS,
@@ -245,6 +258,21 @@ const cacheConfig: {
    * @default 5000 (5 seconds)
    */
   MCP_REGISTRY_CACHE_TTL: math(process.env.MCP_REGISTRY_CACHE_TTL, 5000),
+
+  /**
+   * Coalescing window in ms for cross-instance config-cache invalidation. Peer
+   * events arriving inside one window are applied together, so a burst of admin
+   * saves costs a peer instance one cache clear rather than one per save.
+   * @default 250
+   */
+  CONFIG_INVALIDATION_THROTTLE_MS: math(process.env.CONFIG_INVALIDATION_THROTTLE_MS, 250),
+
+  /**
+   * How many recently applied config-invalidation message ids an instance
+   * remembers, so a redelivery of the same event is not applied twice.
+   * @default 256
+   */
+  CONFIG_INVALIDATION_DEDUPE_LIMIT: math(process.env.CONFIG_INVALIDATION_DEDUPE_LIMIT, 256),
 };
 
 export { cacheConfig };
