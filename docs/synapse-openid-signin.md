@@ -66,9 +66,11 @@ OPENID_ADMIN_ROLE_TOKEN_KIND=id
 
 Two consequences are worth knowing before enabling it:
 
-- **The provider becomes authoritative for admin.** While this configuration is active, an
-  existing LibreChat `ADMIN` whose Synapse `role` is not `admin` is demoted to `USER` on the
-  next login. Admins promoted by hand inside LibreChat do not survive.
+- **The provider becomes authoritative for admin on every account that signs in through
+  it.** An existing LibreChat `ADMIN` whose Synapse `role` is not `admin` is demoted to
+  `USER` on the next sign-in through Synapse. An administrator promoted by hand inside
+  LibreChat is untouched for as long as they keep signing in with a password — but signing in
+  through Synapse links that account to the Synapse identity, and the demotion then applies.
 - `OPENID_ADMIN_ROLE_TOKEN_KIND` accepts only `access`, `id` or `userinfo`. Any other value,
   including `id_token`, throws `Invalid admin role token kind` and fails every login.
 
