@@ -79,6 +79,7 @@ afterEach(() => {
     buildDate: null,
   });
   delete process.env.APP_TITLE;
+  delete process.env.APP_LOGO_URL;
   delete process.env.CHECK_BALANCE;
   delete process.env.START_BALANCE;
   delete process.env.SANDPACK_BUNDLER_URL;
@@ -286,6 +287,25 @@ describe('GET /api/config', () => {
       expect(response.body.appTitle).toBe('Test App');
       expect(response.body).toHaveProperty('emailLoginEnabled');
       expect(response.body).toHaveProperty('serverDomain');
+    });
+
+    it('should expose a configured logo to the pre-login screens', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.APP_LOGO_URL = 'https://cdn.example.com/logo.png';
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.logoUrl).toBe('https://cdn.example.com/logo.png');
+    });
+
+    it('should leave the logo to the client build when none is configured', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body).not.toHaveProperty('logoUrl');
     });
 
     it('should omit CloudFront cookie refresh from unauthenticated response (#12688)', async () => {

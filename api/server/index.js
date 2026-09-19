@@ -43,6 +43,9 @@ const {
   setPluginHookSource,
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
+  applySiteBranding,
+  applyManifestBranding,
+  resolveSiteBranding,
   injectConfiguredFooterBootstrap,
   preAuthTenantMiddleware,
   requestContextMiddleware,
@@ -291,6 +294,21 @@ const startServer = async () => {
     }
   }
 
+  /* A deployment's name and icons are its own, and a rebrand should not need a new
+     client build: the tab title and the favicon are both readable before any script
+     runs, so the shell carries them already applied. The client build declares
+     neither, which is what keeps `APP_TITLE` from disagreeing with the `appTitle`
+     `/api/config` serves out of the same variable. */
+  const siteBranding = resolveSiteBranding(process.env);
+  indexHTML = applySiteBranding(indexHTML, siteBranding);
+
+  /* An installed PWA takes its name and icon from the manifest, so a rebrand that
+     stopped at the shell would leave the install behind. */
+  const manifestPath = path.join(appConfig.paths.dist, 'manifest.webmanifest');
+  const brandedManifest = fs.existsSync(manifestPath)
+    ? applyManifestBranding(fs.readFileSync(manifestPath, 'utf8'), siteBranding)
+    : null;
+
   /* The composer lays out against whether a footer bar sits beneath it, and
      `/api/config` answers that only after it has painted. One shell serves every
      request, before there is a caller whose overrides could be resolved, so the
@@ -366,6 +384,16 @@ const startServer = async () => {
   }
 
   app.get('/index.html', sendIndexHtml);
+  if (brandedManifest != null) {
+    /* staticCache answers the build's manifest with no-store, on the grounds that a
+       rebrand must not be pinned by a cache; this answer is per-deployment in the
+       same way, so it keeps the same header. */
+    app.get('/manifest.webmanifest', (_req, res) => {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.type('application/manifest+json');
+      res.send(brandedManifest);
+    });
+  }
   app.use(staticCache(appConfig.paths.dist));
   app.use(staticCache(appConfig.paths.fonts));
   app.use(staticCache(appConfig.paths.assets));

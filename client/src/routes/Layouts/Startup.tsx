@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { TStartupConfig } from 'librechat-data-provider';
+import { DEFAULT_APP_TITLE, REDIRECT_PARAM, SESSION_KEY } from '~/utils';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { useGetStartupConfig } from '~/data-provider';
 import AuthLayout from '~/components/Auth/AuthLayout';
-import { REDIRECT_PARAM, SESSION_KEY } from '~/utils';
 
 const headerMap: Record<string, TranslationKeys> = {
   '/login': 'com_auth_welcome_back',
@@ -44,7 +44,7 @@ export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: b
   }, [isAuthenticated, navigate, data]);
 
   useEffect(() => {
-    document.title = startupConfig?.appTitle || 'LibreChat';
+    document.title = startupConfig?.appTitle || DEFAULT_APP_TITLE;
   }, [startupConfig?.appTitle]);
 
   useEffect(() => {

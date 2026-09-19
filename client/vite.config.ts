@@ -154,40 +154,17 @@ export default defineConfig(({ command }) => ({
         ],
       },
       includeAssets: [],
+      /**
+       * No `name`, `short_name` or `icons`: the server writes those from `APP_TITLE`
+       * and `APP_LOGO_URL` when it answers `/manifest.webmanifest`, so declaring them
+       * here would be a second definition a rebrand could leave behind. The icon files
+       * still reach dist through `copyPublicAssets`, and the precache still picks them
+       * up through `globPatterns` below.
+       */
       manifest: {
-        name: 'LibreChat',
-        short_name: 'LibreChat',
         display: 'standalone',
         background_color: '#000000',
         theme_color: '#009688',
-        icons: [
-          {
-            src: 'assets/favicon-32x32.png',
-            sizes: '32x32',
-            type: 'image/png',
-          },
-          {
-            src: 'assets/favicon-16x16.png',
-            sizes: '16x16',
-            type: 'image/png',
-          },
-          {
-            src: 'assets/apple-touch-icon-180x180.png',
-            sizes: '180x180',
-            type: 'image/png',
-          },
-          {
-            src: 'assets/icon-192x192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: 'assets/maskable-icon.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'maskable',
-          },
-        ],
       },
     }),
     ...(buildSourceMap ? [sourcemapExclude({ excludeNodeModules: true })] : []),

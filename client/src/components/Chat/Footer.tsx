@@ -4,7 +4,11 @@ import ReactMarkdown from 'react-markdown';
 import { hasConfiguredFooter } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { useGetStartupConfig } from '~/data-provider';
+import { DEFAULT_APP_TITLE } from '~/utils';
 import { useLocalize } from '~/hooks';
+
+/** The fork this deployment's footer credits. */
+const FORK_URL = 'https://github.com/Chloemlla/LibreChat';
 
 type FooterProps = {
   className?: string;
@@ -18,7 +22,10 @@ type FooterProps = {
   configuredOnly?: boolean;
 };
 
-type FooterStartupConfig = Pick<Partial<TStartupConfig>, 'analyticsGtmId' | 'customFooter'> & {
+type FooterStartupConfig = Pick<
+  Partial<TStartupConfig>,
+  'analyticsGtmId' | 'appTitle' | 'customFooter'
+> & {
   interface?: Pick<NonNullable<TStartupConfig['interface']>, 'privacyPolicy' | 'termsOfService'>;
 };
 
@@ -75,10 +82,10 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
   );
 
   const configuredFooter = typeof config?.customFooter === 'string' ? config.customFooter : null;
-  /** The generic disclaimer is the part a conversation drops; operator content is not. */
+  /** The disclaimer is the part a conversation drops; operator content is not. */
   const genericFooter = configuredOnly
     ? ''
-    : '[HappyChat v1.0.0](https://github.com/Happy-clo/LibreChat/tree/main?tab=readme-ov-file#about-this-fork) - ' +
+    : `[${config?.appTitle || DEFAULT_APP_TITLE}](${FORK_URL}) - ` +
       localize('com_ui_latest_footer');
   const mainContent = configuredFooter ?? genericFooter;
   const mainContentParts = mainContent === '' ? [] : mainContent.split('|');

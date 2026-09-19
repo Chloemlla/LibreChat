@@ -22,16 +22,21 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => mockTranslations[key] ?? key,
 }));
 
+const FORK_URL = 'https://github.com/Chloemlla/LibreChat';
+
 describe('Footer', () => {
-  test('opens the default HappyChat site link in a new tab', () => {
-    render(<Footer startupConfig={null} />);
-    const link = screen.getByRole('link', { name: /HappyChat/ });
-    expect(link).toHaveAttribute(
-      'href',
-      'https://github.com/Happy-clo/LibreChat/tree/main?tab=readme-ov-file#about-this-fork',
-    );
+  test('credits the fork under the configured app title', () => {
+    render(<Footer startupConfig={{ appTitle: 'Happy Chat' }} />);
+    const link = screen.getByRole('link', { name: 'Happy Chat' });
+    expect(link).toHaveAttribute('href', FORK_URL);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  test('falls back to the default app title when none is configured', () => {
+    render(<Footer startupConfig={null} />);
+    const link = screen.getByRole('link', { name: 'LibreChat' });
+    expect(link).toHaveAttribute('href', FORK_URL);
   });
 
   test('opens custom footer markdown links in a new tab', () => {
