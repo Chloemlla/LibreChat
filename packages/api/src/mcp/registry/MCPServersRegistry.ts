@@ -770,7 +770,7 @@ export class MCPServersRegistry {
    */
   private async joinReinspection(
     target: ReinspectionTarget,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
     stub: t.ParsedServerConfig,
     waiter?: string,
   ): Promise<t.AddServerResult> {
@@ -814,7 +814,7 @@ export class MCPServersRegistry {
 
   private async reinspectStub(
     target: ReinspectionTarget,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
     stub: t.ParsedServerConfig,
     flightKey: string,
   ): Promise<t.AddServerResult> {
@@ -869,7 +869,7 @@ export class MCPServersRegistry {
    */
   private async resolveStoredEntry(
     target: ReinspectionTarget,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
     stub: t.ParsedServerConfig,
     flightKey: string,
     failure: MCPInspectionFailedError,
@@ -924,7 +924,7 @@ export class MCPServersRegistry {
    */
   private reinspectionKey(
     { serverName, storageLocation, userId }: ReinspectionTarget,
-    allowlists: ResolvedMCPAllowlists,
+    allowlists: MCPAllowlists,
     stub: t.ParsedServerConfig,
   ): string {
     return JSON.stringify([
