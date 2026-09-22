@@ -739,7 +739,11 @@ if (cluster.isMaster) {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
         await checkMigrations();
-        await initializeAgentTriggerService({ address: server.address() });
+        await initializeAgentTriggerService({
+          address: server.address(),
+          completionResultBatchSize:
+            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        });
 
         /** One worker announces the deployment's state; every worker repeating it is noise. */
         if (cluster.worker?.id === 1) {
