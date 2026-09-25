@@ -105,6 +105,7 @@ export enum QueryKeys {
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
+  backgroundTasks = 'backgroundTasks',
   codeEnvironments = 'codeEnvironments',
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */
@@ -126,6 +127,7 @@ export const DynamicQueryKeys = {
 export enum MutationKeys {
   generateWidget = 'generateWidget',
   subagentControl = 'subagentControl',
+  cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
   /** Whole-array favorites write, keyed so every hook instance's write is
