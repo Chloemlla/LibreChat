@@ -1,7 +1,7 @@
 # Signing in with Synapse
 
 This deployment authenticates users against **Synapse**, a self-hosted OAuth 2.0 / OpenID
-Connect provider at `https://tts.chloemlla.com`. LibreChat acts as a standard OIDC client
+Connect provider at `https://chloemlla.com`. LibreChat acts as a standard OIDC client
 through its generic `openid` Passport strategy; no Synapse-specific code is involved.
 
 The provider's own third-party integration guide lives in
@@ -14,7 +14,7 @@ refreshed from upstream; LibreChat-side configuration belongs here.
 
 | Variable | Value | Notes |
 | --- | --- | --- |
-| `OPENID_ISSUER` | `https://tts.chloemlla.com` | Must match the `issuer` in the discovery document character for character. |
+| `OPENID_ISSUER` | `https://chloemlla.com` | Must match the `issuer` in the discovery document character for character. |
 | `OPENID_CLIENT_ID` | from the Synapse admin UI | Create the client at `/admin?tab=oauth` on the provider. |
 | `OPENID_CLIENT_SECRET` | from the Synapse admin UI | Shown only once at creation. |
 | `OPENID_SCOPE` | `openid profile email` | Must include `openid`. The email scope is what lets LibreChat match an account by address. |
@@ -28,7 +28,7 @@ refreshed from upstream; LibreChat-side configuration belongs here.
 
 LibreChat starts through `openid-client`'s discovery flow, so Synapse must serve:
 
-- `GET https://tts.chloemlla.com/.well-known/openid-configuration` — the standard OIDC
+- `GET https://chloemlla.com/.well-known/openid-configuration` — the standard OIDC
   discovery path. The `/api/oauth/.well-known/openid-configuration` endpoint in the
   provider guide is a different route and is not read here.
 - An `issuer` in that document equal to `OPENID_ISSUER`. `openid-client` validates this and
