@@ -1,4 +1,8 @@
-import { PrincipalType, materializeModelSpecEndpoints } from 'librechat-data-provider';
+import {
+  PrincipalType,
+  materializeModelSpecEndpoints,
+  setMaxSubagents,
+} from 'librechat-data-provider';
 import {
   logger,
   getTenantId,
@@ -11,6 +15,7 @@ import type {
   ConfigInvalidationChannelOptions,
   ConfigInvalidationRequest,
 } from '~/cache/invalidation';
+import type { CustomConfigLoadMode } from './loader';
 import { createConfigInvalidationChannel } from '~/cache/invalidation';
 import { registerShutdownTask } from './shutdown';
 
@@ -64,7 +69,7 @@ interface CacheStore {
 
 export interface AppConfigServiceDeps {
   /** Load the base AppConfig from YAML + AppService processing. */
-  loadBaseConfig: () => Promise<AppConfig | undefined>;
+  loadBaseConfig: (mode?: CustomConfigLoadMode) => Promise<AppConfig | undefined>;
   /** Cache tools after base config is loaded. */
   setCachedTools: (tools: Record<string, unknown>) => Promise<void>;
   /** Get a cache store by key. */
@@ -200,6 +205,8 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
   const cache = getCache(cacheKeys.APP_CONFIG);
   const invalidationChannel =
     invalidation == null ? null : createConfigInvalidationChannel(invalidation);
+  let lastGoodBaseConfig: AppConfig | undefined;
+  let baseConfigFlight: Promise<AppConfig> | undefined;
 
   async function buildPrincipals(
     role?: string,
@@ -223,29 +230,80 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     return principals;
   }
 
+  async function restoreLastGoodBaseConfig(error: unknown): Promise<AppConfig> {
+    const lastGood = lastGoodBaseConfig;
+    if (!lastGood) {
+      throw error;
+    }
+
+    setMaxSubagents(lastGood.config?.endpoints?.agents?.maxSubagents);
+    logger.error(
+      '[ensureBaseConfig] Failed to reload base configuration; keeping the last good configuration.',
+      error,
+    );
+    const restorations = [cache.set(BASE_CONFIG_KEY, lastGood)];
+    if (lastGood.availableTools) {
+      restorations.push(setCachedTools(lastGood.availableTools));
+    }
+    const results = await Promise.allSettled(restorations);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        logger.error('[ensureBaseConfig] Failed to restore last-good config state:', result.reason);
+      }
+    }
+    return lastGood;
+  }
+
+  async function loadAndCacheBaseConfig(mode: CustomConfigLoadMode): Promise<AppConfig> {
+    try {
+      logger.info('[ensureBaseConfig] Loading base configuration...');
+      const loaded = await loadBaseConfig(mode);
+      if (!loaded) {
+        throw new Error('Failed to initialize app configuration through AppService.');
+      }
+
+      const baseConfig = materializeConfigModelSpecs(loaded);
+      if (baseConfig.availableTools) {
+        await setCachedTools(baseConfig.availableTools);
+      }
+      await cache.set(BASE_CONFIG_KEY, baseConfig);
+      lastGoodBaseConfig = baseConfig;
+      return baseConfig;
+    } catch (error) {
+      if (mode === 'startup') {
+        throw error;
+      }
+      return restoreLastGoodBaseConfig(error);
+    }
+  }
+
   /**
    * Ensure the YAML-derived base config is loaded and cached.
    * Returns the `_BASE_` config (YAML + AppService). No DB queries.
    */
   async function ensureBaseConfig(refresh?: boolean): Promise<AppConfig> {
-    let baseConfig = (await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined;
-    if (!baseConfig || refresh) {
-      logger.info('[ensureBaseConfig] Loading base configuration...');
-      baseConfig = await loadBaseConfig();
-
-      if (!baseConfig) {
-        throw new Error('Failed to initialize app configuration through AppService.');
+    const cached = (await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined;
+    if (cached) {
+      lastGoodBaseConfig ??= cached;
+      if (!refresh) {
+        return cached;
       }
-
-      baseConfig = materializeConfigModelSpecs(baseConfig);
-
-      if (baseConfig.availableTools) {
-        await setCachedTools(baseConfig.availableTools);
-      }
-
-      await cache.set(BASE_CONFIG_KEY, baseConfig);
     }
-    return baseConfig;
+
+    if (baseConfigFlight) {
+      return baseConfigFlight;
+    }
+
+    const mode: CustomConfigLoadMode = lastGoodBaseConfig ? 'reload' : 'startup';
+    const flight = loadAndCacheBaseConfig(mode);
+    baseConfigFlight = flight;
+    try {
+      return await flight;
+    } finally {
+      if (baseConfigFlight === flight) {
+        baseConfigFlight = undefined;
+      }
+    }
   }
 
   /**

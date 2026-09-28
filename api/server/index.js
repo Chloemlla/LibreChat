@@ -51,6 +51,7 @@ const {
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
   setupGracefulShutdown,
   updateInterfacePermissions,
@@ -242,6 +243,9 @@ const startServer = async () => {
   /* Process-wide module loading reads the base config only: a `__base__` override must not
    * decide which modules every worker imports. Mirrors experimental.js. */
   const baseAppConfig = await getAppConfig({ baseOnly: true });
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
   configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
