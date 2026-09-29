@@ -787,7 +787,7 @@ describe('createAppConfigService', () => {
         getApplicableConfigs: jest.fn().mockResolvedValue([
           {
             priority: 10,
-            overrides: { endpoints: ['untrusted-override'] },
+            overrides: { interface: { modelSelect: false } },
             isActive: true,
           },
         ]),
@@ -799,7 +799,7 @@ describe('createAppConfigService', () => {
 
       expect(config).toEqual(
         expect.objectContaining({
-          endpoints: ['untrusted-override'],
+          interfaceConfig: { modelSelect: false },
         }),
       );
     });
