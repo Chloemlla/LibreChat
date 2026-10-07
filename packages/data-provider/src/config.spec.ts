@@ -2572,7 +2572,8 @@ describe('interface widgetCompileTimeoutMs config', () => {
     const result = interfaceSchema.parse({});
 
     expect(result.widgetCompileTimeoutMs).toBeUndefined();
-
+  });
+});
 
 describe('interface theme config', () => {
   const parseTheme = (theme: unknown) =>

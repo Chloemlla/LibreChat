@@ -668,6 +668,7 @@ describe('MCPServersRegistry', () => {
         allowedDomains: ['admin-added.com'],
         allowedAddresses: null,
         useSSRFProtection: false,
+        mcpApps: DEFAULT_MCP_APPS_POLICY,
       });
     });
 

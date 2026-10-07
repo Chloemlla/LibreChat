@@ -11,6 +11,7 @@ let mockUser: LegacyProviderUser | undefined;
 jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ user: mockUser }),
   useHasAccess: () => false,
+  useHasCapability: () => () => false,
   useGetAgentsConfig: () => ({ agentsConfig: undefined }),
 }));
 
