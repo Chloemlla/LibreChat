@@ -444,7 +444,6 @@ if (cluster.isMaster) {
     logger.info(`Worker ${process.pid} initializing...`);
 
     await waitForKeyvRedisClient();
-    await configureSubagentTaskRouting();
 
     if (typeof Bun !== 'undefined') {
       axios.defaults.headers.common['Accept-Encoding'] = 'gzip';
@@ -508,6 +507,7 @@ if (cluster.isMaster) {
     // modules load in every worker. index.js splits the same way: merged config for its
     // startup consumers, this dedicated base-only read for event rollout and hooks.
     const baseAppConfig = await getAppConfig({ baseOnly: true });
+    await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
     registerBackgroundTaskShutdown({
       interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
       getBudgetMs: clusterShutdownBudgetMs,
@@ -564,7 +564,6 @@ if (cluster.isMaster) {
        so the answer is the deployment's base configuration, like index.js. */
     indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
       customFooter: process.env.CUSTOM_FOOTER,
-      interfaceConfig: baseAppConfig?.interfaceConfig,
     });
 
     const cspPolicy = createCspPolicy();
@@ -744,6 +743,8 @@ if (cluster.isMaster) {
           address: server.address(),
           completionResultBatchSize:
             baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+          completionReceiptBatching:
+            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
           idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
 

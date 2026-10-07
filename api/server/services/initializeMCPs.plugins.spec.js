@@ -28,6 +28,7 @@ jest.mock('@librechat/api', () => ({
   get applyMCPBootConfig() {
     return mockApplyMCPBootConfig;
   },
+  createMCPAppBindingCodec: jest.fn(() => ({ create: jest.fn(), verify: jest.fn() })),
   get getDeploymentPluginMcpServers() {
     return mockGetDeploymentPluginMcpServers;
   },

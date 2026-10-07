@@ -2,6 +2,8 @@ import type {
   TFeedbackRating,
   TFeedbackTag,
   TStoredWidget,
+
+  TReasoningOverride,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -60,6 +62,10 @@ export interface IMessage extends Document {
   sender?: string;
   text?: string;
   summary?: string;
+  /** Authenticated ciphertext, available only through the owner-view read. */
+  privateText?: string;
+  privacyRevision?: string;
+  privateTextTokens?: string[];
   isCreatedByUser: boolean;
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted?: boolean;
@@ -137,6 +143,9 @@ export interface IMessage extends Document {
   /** Verbatim excerpts the user quoted to reference on this turn. UI-only metadata for `MessageQuotes`. */
   quotes?: string[];
   widgets?: TStoredWidget[];
+
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride?: TReasoningOverride;
   expiredAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;

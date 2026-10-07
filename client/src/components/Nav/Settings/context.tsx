@@ -5,6 +5,7 @@ import {
   PermissionTypes,
   Permissions,
   SystemCapabilities,
+  isTwoFactorPolicyProvider,
 } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
 import { useHasCapability, useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
@@ -38,9 +39,23 @@ export function useSettingsContext(): SettingsContextValue {
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
   const hasAdminConfigAccess = hasCapability(SystemCapabilities.ACCESS_ADMIN);
   const isLocalProvider = user?.provider === 'local';
+  const emailEnabled = startupConfig?.emailEnabled === true;
+  const allowEmailChange = startupConfig?.allowEmailChange === true;
+  const passkeyLoginEnabled = startupConfig?.passkeyLoginEnabled === true;
+  const twoFactorPolicyProvider = user != null && isTwoFactorPolicyProvider(user.provider);
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
   const aboutEnabled = startupConfig?.interface?.buildInfo !== false;
+  /* Offered only once the deployment has answered, matching the capability hook the alerts
+     read: before then a toggle could store a preference, or raise the browser's permission
+     prompt, for a capability the operator turns off. */
+  const replyConfigLoaded = startupConfig != null;
+  const replyNotificationsConfig = startupConfig?.interface?.replyNotifications;
+  const replyTabBadgeAllowed = replyConfigLoaded && replyNotificationsConfig?.tabBadge !== false;
+  const replyNotificationsAllowed =
+    replyConfigLoaded && replyNotificationsConfig?.desktop !== false;
+  const replyNotificationSoundAllowed =
+    replyConfigLoaded && replyNotificationsConfig?.sound !== false;
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
@@ -60,6 +75,10 @@ export function useSettingsContext(): SettingsContextValue {
       hasMultiConvo: hasMultiConvoBool,
       hasPrompts: hasPromptsBool,
       isLocalProvider,
+      emailEnabled,
+      allowEmailChange,
+      passkeyLoginEnabled,
+      isTwoFactorPolicyProvider: twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
@@ -67,6 +86,9 @@ export function useSettingsContext(): SettingsContextValue {
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
+      replyTabBadgeAllowed,
+      replyNotificationsAllowed,
+      replyNotificationSoundAllowed,
     }),
     [
       balanceEnabled,
@@ -78,6 +100,10 @@ export function useSettingsContext(): SettingsContextValue {
       hasMultiConvoBool,
       hasPromptsBool,
       isLocalProvider,
+      emailEnabled,
+      allowEmailChange,
+      passkeyLoginEnabled,
+      twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
@@ -85,6 +111,9 @@ export function useSettingsContext(): SettingsContextValue {
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
+      replyTabBadgeAllowed,
+      replyNotificationsAllowed,
+      replyNotificationSoundAllowed,
     ],
   );
 }

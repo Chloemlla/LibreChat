@@ -27,6 +27,7 @@ const {
   createSecurityHeaders,
   performStartupChecks,
   handleJsonParseError,
+  excludeRumBodyParser,
   GenerationJobManager,
   QUERY_DEVTOOLS_HEADER,
   createStreamServices,
@@ -175,7 +176,6 @@ const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
-  await configureSubagentTaskRouting();
   const { metricsMiddleware, metricsRouter } = createMetrics({
     collectAgentEventActorStorageMetrics: () =>
       runAsSystem(async () => {
@@ -242,6 +242,7 @@ const startServer = async () => {
   /* Process-wide module loading reads the base config only: a `__base__` override must not
    * decide which modules every worker imports. Mirrors experimental.js. */
   const baseAppConfig = await getAppConfig({ baseOnly: true });
+  await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
   });
@@ -325,7 +326,6 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
-    interfaceConfig: appConfig?.interfaceConfig,
   });
 
   const cspPolicy = createCspPolicy();
@@ -365,8 +365,8 @@ const startServer = async () => {
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
-  app.use(express.json({ limit: '3mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+  app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
+  app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
   app.use(handleJsonParseError);
 
   /**
@@ -548,6 +548,8 @@ const startServer = async () => {
         address: server.address(),
         completionResultBatchSize:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        completionReceiptBatching:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

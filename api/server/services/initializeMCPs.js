@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { logger } = require('@librechat/data-schemas');
+const { resolveMCPAppsPolicy } = require('librechat-data-provider');
 const {
   applyMCPBootConfig,
   registerShutdownTask,
@@ -8,6 +9,7 @@ const {
   setMCPToolsChangedGenerationHandler,
   setMCPToolsChangedGenerationRenewalHandler,
   setMCPToolsChangedRevisionHandler,
+  createMCPAppBindingCodec,
 } = require('@librechat/api');
 const { syncStaticTools, mergeAppTools, getAppConfig, invalidateCachedTools } = require('./Config');
 const { startMCPAuthorizationFenceRetryWorker } = require('./MCPAuthorizationFenceRetry');
@@ -27,10 +29,24 @@ const { createMCPServersRegistry, createMCPManager } = require('~/config');
  * @param {{ userId?: string, role?: string }} [ctx]
  */
 async function resolveMCPAllowlists(ctx) {
-  const appConfig = await getAppConfig({ role: ctx?.role, userId: ctx?.userId });
+  const appConfig = await getAppConfig({
+    role: ctx?.role,
+    userId: ctx?.userId,
+    failClosed: true,
+  });
   return {
     allowedDomains: appConfig?.mcpSettings?.allowedDomains,
     allowedAddresses: appConfig?.mcpSettings?.allowedAddresses,
+    mcpApps: resolveMCPAppsPolicy(
+      appConfig?.mcpSettings?.apps,
+      undefined,
+      appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+      appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+      appConfig?.mcpAppSandbox?.url,
+      appConfig?.mcpAppSandbox?.maxActiveViews,
+      appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+      appConfig?.mcpAppSandbox?.operationLimits,
+    ),
   };
 }
 
@@ -49,6 +65,7 @@ async function refreshChangedServerTools({
   serverConfig,
   publicationGeneration,
   publicationRevision,
+  capabilityProfile,
 }) {
   await updateMCPServerTools({
     userId,
@@ -57,6 +74,7 @@ async function refreshChangedServerTools({
     serverConfig,
     ...(publicationGeneration && { publicationGeneration }),
     ...(publicationRevision && { publicationRevision }),
+    capabilityProfile,
   });
   const toolCount = tools.length;
   logger.info(
@@ -108,6 +126,16 @@ async function initializeMCPs() {
       appConfig?.mcpSettings?.allowedDomains,
       appConfig?.mcpSettings?.allowedAddresses,
       resolveMCPAllowlists,
+      resolveMCPAppsPolicy(
+        appConfig?.mcpSettings?.apps,
+        undefined,
+        appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+        appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+        appConfig?.mcpAppSandbox?.url,
+        appConfig?.mcpAppSandbox?.maxActiveViews,
+        appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+        appConfig?.mcpAppSandbox?.operationLimits,
+      ),
     );
     /**
      * Must precede `createMCPManager` below: catalog recovery resets the registry and
@@ -126,6 +154,7 @@ async function initializeMCPs() {
       catalogRecoveryMaxStateEntries: appConfig?.mcpSettings?.catalogRecovery?.maxStateEntries,
       catalogRecoveryMaxDetachedDiscoveries:
         appConfig?.mcpSettings?.catalogRecovery?.maxDetachedDiscoveries,
+      appBindingCodec: createMCPAppBindingCodec(process.env.JWT_SECRET),
     });
     startMCPAuthorizationFenceRetryWorker(invalidateCachedTools, {
       intervalMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryIntervalMs,
