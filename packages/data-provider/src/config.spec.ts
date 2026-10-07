@@ -25,7 +25,6 @@ import {
   resolveMCPAppRateLimits,
   resolveMCPAppsPolicy,
   endpointSchema,
-  interfaceSchema,
   isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
