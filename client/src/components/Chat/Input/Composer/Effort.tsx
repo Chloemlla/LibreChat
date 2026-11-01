@@ -1,7 +1,9 @@
-import { memo, useRef, useMemo, useState, useEffect, useCallback, useLayoutEffect } from 'react';
+import { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { CircleHelp } from 'lucide-react';
+import { useReducedMotion } from '@librechat/chat/react';
 import { Constants, reasoningOverrideSchema } from 'librechat-data-provider';
 import {
+  Button,
   HoverCard,
   IconButton,
   HoverCardTrigger,
@@ -12,7 +14,6 @@ import type { SettingDefinition, TConversation, TReasoningOverride } from 'libre
 import type { CSSProperties } from 'react';
 import type { LocalizeFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks';
-import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -183,11 +184,10 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
       : -1;
   const restoreIndex = rememberedIndex >= 0 ? rememberedIndex : 0;
   const shownIndex = activeIndex >= 0 ? activeIndex : restoreIndex;
-  const initialShownIndex = useRef(shownIndex);
-
-  useLayoutEffect(() => {
-    stopRefs.current[initialShownIndex.current]?.focus();
-  }, []);
+  /* Where the popover's own autofocus lands on open. In the separate mode no
+     level is checked, so it starts on the pressed toggle that names that mode
+     rather than on an unchecked, unlabelled stop. */
+  const initialFocus = useRef({ index: shownIndex, ungraded: isUngraded && ungradedValue != null });
 
   const select = useCallback(
     (nextValue: string) => {
@@ -465,9 +465,9 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
              destructured here where `left`/`right` are visibly the only keys. */
           const { left, right } = hitArea(index);
           return (
-            <button
+            <Button
               key={value}
-              type="button"
+              variant="hit-area"
               role="radio"
               aria-checked={!isUngraded && index === activeIndex}
               aria-label={label(value)}
@@ -476,6 +476,11 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                  between them. In the ungraded mode no level is checked, so the one that
                  would be restored takes the tab stop. */
               tabIndex={index === shownIndex ? 0 : -1}
+              data-autofocus={
+                !initialFocus.current.ungraded && index === initialFocus.current.index
+                  ? true
+                  : undefined
+              }
               onKeyDown={(event) => {
                 const step = ARROW_STEP[event.key];
                 if (step === undefined) {
@@ -491,7 +496,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
               }}
               onClick={() => select(value)}
               style={{ left, right }}
-              className="focus-visible:ring-text-primary absolute inset-y-0 rounded-full focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
+              className="absolute inset-y-0"
             />
           );
         })}
@@ -526,19 +531,14 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
             {/* Always present so the separate mode reads as something the user
                 can turn on and off rather than as a one-way escape hatch. */}
             {ungradedValue != null && (
-              <button
-                type="button"
+              <Button
+                variant="pill-toggle"
+                data-autofocus={initialFocus.current.ungraded ? true : undefined}
                 aria-pressed={isUngraded}
                 onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
-                className={cn(
-                  'rounded-full px-2 py-0.5 text-xs transition-colors',
-                  isUngraded
-                    ? 'bg-accent-primary/15 text-accent-primary'
-                    : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-                )}
               >
                 {label(ungradedValue)}
-              </button>
+              </Button>
             )}
             {descriptionText != null && descriptionText !== '' && (
               <HoverCard openDelay={200}>

@@ -30,6 +30,7 @@ const search = require('./search');
 const setup = require('./setup');
 const models = require('./models');
 const convos = require('./convos');
+const pullRequests = require('./pullRequests');
 const traces = require('./traces');
 const config = require('./config');
 const agents = require('./agents');
@@ -48,6 +49,7 @@ const insights = require('./insights');
 const widgets = require('./widgets');
 
 module.exports = {
+  pullRequests,
   insights,
   widgets,
   rum,

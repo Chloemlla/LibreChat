@@ -23,9 +23,9 @@ const requireLdapAuth = require('./requireLdapAuth');
 const abortMiddleware = require('./abortMiddleware');
 const checkInviteUser = require('./checkInviteUser');
 const requireJwtAuth = require('./requireJwtAuth');
-const { requireRumProxyAuth } = require('./requireJwtAuth');
+const { requireRumProxyAuth, requireTermsAcceptance } = require('./requireJwtAuth');
 const configMiddleware = require('./config/app');
-const { strictConfigMiddleware } = require('./config/app');
+const { strictConfigMiddleware, loadStreamKeepaliveMs } = require('./config/app');
 const validateModel = require('./validateModel');
 const moderateText = require('./moderateText');
 const logHeaders = require('./logHeaders');
@@ -35,14 +35,12 @@ const limiters = require('./limiters');
 const uaParser = require('./uaParser');
 const checkBan = require('./checkBan');
 const noIndex = require('./noIndex');
-const roles = require('./roles');
 const { validateTurnstile } = require('./validateTurnstile');
 
 module.exports = {
   ...abortMiddleware,
   ...validate,
   ...limiters,
-  ...roles,
   ...accessResources,
   noIndex,
   checkBan,
@@ -54,6 +52,7 @@ module.exports = {
   validateModel,
   requireJwtAuth,
   requireRumProxyAuth,
+  requireTermsAcceptance,
   setTwoFactorTempUser,
   setTwoFactorAcknowledgementTempUser,
   setTwoFactorFinalizationTempUser,
@@ -65,6 +64,7 @@ module.exports = {
   canDeleteAccount,
   configMiddleware,
   strictConfigMiddleware,
+  loadStreamKeepaliveMs,
   checkDomainAllowed,
   validateMessageReq,
   canReadActiveJobConversation,

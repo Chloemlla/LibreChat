@@ -1,11 +1,11 @@
 import React from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { activeSubagentPanel, durableSubagentSelection } from '@librechat/chat/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from './state';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import EventSubagentActivityGroup from './EventSubagentActivityGroup';
 import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
-import { activeSubagentPanel } from './state';
 
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
 const mockChild: ParentSubagentSummary = {
@@ -257,6 +257,56 @@ describe('EventSubagentActivityGroup', () => {
     );
     expect(completed.lastElementChild).toHaveClass('bg-status-success');
     expect(completed.firstElementChild).not.toHaveClass('shimmer');
+  });
+
+  it('keeps a pinned task when an earlier row refresh finishes', async () => {
+    let selection: ActiveSubagentPanel | null = null;
+    let resolveRefresh!: (value: { children: ParentSubagentSummary[] }) => void;
+    mockRefresh.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const Observer = () => {
+      selection = useAtomValue(activeSubagentPanel);
+      return null;
+    };
+    const PinTask = () => {
+      const setSelection = useSetAtom(activeSubagentPanel);
+      return (
+        <button
+          type="button"
+          data-testid="pin-task"
+          onClick={() =>
+            setSelection(durableSubagentSelection('parent-conversation', mockChild, 'task-1'))
+          }
+        />
+      );
+    };
+    render(
+      <ChatSurfaceHarness>
+        <Observer />
+        <PinTask />
+        <EventSubagentActivityGroup
+          conversationId="parent-conversation"
+          parentMessageIds={['parent-message']}
+        />
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
+    fireEvent.click(screen.getByTestId('pin-task'));
+    await act(async () => {
+      resolveRefresh({
+        children: [{ ...mockChild, latestTaskId: 'task-2' }],
+      });
+    });
+    expect(selection).toEqual(
+      expect.objectContaining({
+        durable: { threadId: 'event-thread', taskId: 'task-1' },
+        event: expect.objectContaining({ pinnedTask: true }),
+      }),
+    );
   });
 
   it('does not reopen a child after the user closes it while refresh is pending', async () => {

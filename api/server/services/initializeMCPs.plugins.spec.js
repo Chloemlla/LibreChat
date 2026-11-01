@@ -24,11 +24,15 @@ const mockRegisterShutdownTask = jest.fn();
 const mockApplyMCPBootConfig = jest.fn();
 const mockSetHandler = jest.fn();
 
+jest.mock('~/models', () => ({ listConfigTombstones: jest.fn() }));
+
 jest.mock('@librechat/api', () => ({
   get applyMCPBootConfig() {
     return mockApplyMCPBootConfig;
   },
   createMCPAppBindingCodec: jest.fn(() => ({ create: jest.fn(), verify: jest.fn() })),
+  createMCPPolicyResolver: jest.fn(() => jest.fn()),
+  reportStoredMCPTombstones: jest.fn().mockResolvedValue(undefined),
   get getDeploymentPluginMcpServers() {
     return mockGetDeploymentPluginMcpServers;
   },

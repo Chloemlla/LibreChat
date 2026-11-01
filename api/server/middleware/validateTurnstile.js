@@ -15,7 +15,11 @@ const getTurnstileConfig = (appConfig) => appConfig?.turnstileConfig ?? appConfi
 const validateTurnstile = async (req, res, next) => {
   try {
     const tenantId = getTenantId();
-    const appConfig = await getAppConfig(tenantId ? { tenantId } : { baseOnly: true });
+    const appConfig = await getAppConfig({
+      ...(tenantId ? { tenantId } : {}),
+      skipRuntimeAugmentation: true,
+      failClosed: true,
+    });
     const turnstileConfig = getTurnstileConfig(appConfig);
     const turnstileEnabled = Boolean(turnstileConfig?.siteKey);
 

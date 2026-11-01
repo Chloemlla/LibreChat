@@ -9,15 +9,17 @@ import {
 } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
 import { useHasCapability, useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
+import { useGetStartupConfig, usePullRequestConnectionStatus } from '~/data-provider';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
-import { useGetStartupConfig } from '~/data-provider';
+import { hasAnalyticsGtmId } from '~/store/analytics';
 import store from '~/store';
 
 export function useSettingsContext(): SettingsContextValue {
   const { user } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
   const { agentsConfig } = useGetAgentsConfig();
+  const pullRequestConnection = usePullRequestConnectionStatus();
   const { hasAnyPersonalizationFeature, hasMemoryOptOut } = usePersonalizationAccess();
   const hasCapability = useHasCapability();
 
@@ -36,16 +38,23 @@ export function useSettingsContext(): SettingsContextValue {
 
   const balanceEnabled = startupConfig?.balance?.enabled === true;
   const langfuseConnectionAccess = startupConfig?.langfuseConnectionAccess === true;
+  const langfusePromptSyncAccess = startupConfig?.langfusePromptSyncAccess === true;
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
   const hasAdminConfigAccess = hasCapability(SystemCapabilities.ACCESS_ADMIN);
   const isLocalProvider = user?.provider === 'local';
   const emailEnabled = startupConfig?.emailEnabled === true;
   const allowEmailChange = startupConfig?.allowEmailChange === true;
   const passkeyLoginEnabled = startupConfig?.passkeyLoginEnabled === true;
+  /** Also while a stored grant outlives its app, so it can still be disconnected. */
+  const hasPullRequestConnect =
+    pullRequestConnection?.connected === true ||
+    (startupConfig?.pullRequestsConnect != null && pullRequestConnection?.configured !== false);
   const twoFactorPolicyProvider = user != null && isTwoFactorPolicyProvider(user.provider);
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
   const aboutEnabled = startupConfig?.interface?.buildInfo !== false;
+  /* Offered only once the deployment has answered, so an operator's opt-out never flashes the row. */
+  const mascotAllowed = startupConfig != null && startupConfig.interface?.mascot !== false;
   /* Offered only once the deployment has answered, matching the capability hook the alerts
      read: before then a toggle could store a preference, or raise the browser's permission
      prompt, for a capability the operator turns off. */
@@ -56,6 +65,10 @@ export function useSettingsContext(): SettingsContextValue {
     replyConfigLoaded && replyNotificationsConfig?.desktop !== false;
   const replyNotificationSoundAllowed =
     replyConfigLoaded && replyNotificationsConfig?.sound !== false;
+  /* No toggle when the deployment granted consent for everyone: there is no choice to change. */
+  const analyticsConfigured =
+    hasAnalyticsGtmId(startupConfig?.analyticsGtmId) &&
+    startupConfig?.interface?.analyticsConsent !== false;
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
@@ -78,17 +91,21 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       isTwoFactorPolicyProvider: twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
       hasAdminConfigAccess,
+      mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     }),
     [
       balanceEnabled,
@@ -103,17 +120,21 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
       hasAdminConfigAccess,
+      mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     ],
   );
 }

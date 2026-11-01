@@ -57,7 +57,7 @@ jest.mock('@librechat/data-schemas', () => {
 });
 
 const axios = require('axios');
-const { loadYaml } = require('@librechat/api');
+const { loadYaml, expandCustomEndpoint } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { ReasoningParameterFormat, ReasoningResponseKey } = require('librechat-data-provider');
 const loadCustomConfig = require('./loadCustomConfig');
@@ -353,7 +353,12 @@ describe('loadCustomConfig', () => {
     expect(result.langfuse.headers['CF-Access-Client-Secret']).toBe('gateway-credential');
   });
 
-  describe('parseCustomParams', () => {
+  /**
+   * The loader checks each custom endpoint's `customParams` and returns them as written; the
+   * served copy is expanded by `expandCustomEndpoint` (AppService), so `appConfig.config` stays
+   * librechat.yaml as written.
+   */
+  describe('customParams', () => {
     const mockConfig = {
       version: '1.0',
       cache: false,
@@ -433,6 +438,9 @@ describe('loadCustomConfig', () => {
       });
 
       expect(parsedConfig.endpoints.custom[0].customParams).toEqual({
+        reasoningFormat: ReasoningParameterFormat.reasoningObject,
+      });
+      expect(expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams).toEqual({
         defaultParamsEndpoint: 'custom',
         reasoningFormat: ReasoningParameterFormat.reasoningObject,
         paramDefinitions: [],
@@ -445,6 +453,9 @@ describe('loadCustomConfig', () => {
       });
 
       expect(parsedConfig.endpoints.custom[0].customParams).toEqual({
+        reasoningKey: ReasoningResponseKey.reasoning,
+      });
+      expect(expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams).toEqual({
         defaultParamsEndpoint: 'custom',
         reasoningKey: ReasoningResponseKey.reasoning,
         paramDefinitions: [],
@@ -460,8 +471,11 @@ describe('loadCustomConfig', () => {
         ],
       };
 
+      const written = structuredClone(customParams);
       const parsedConfig = await loadCustomParams(customParams);
-      const paramDefinitions = parsedConfig.endpoints.custom[0].customParams.paramDefinitions;
+      expect(parsedConfig.endpoints.custom[0].customParams).toEqual(written);
+      const paramDefinitions = expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams
+        .paramDefinitions;
       expect(paramDefinitions).toEqual([
         {
           columnSpan: 1,
@@ -511,7 +525,8 @@ describe('loadCustomConfig', () => {
       loadYaml.mockReturnValue(openRouterConfig);
 
       const parsedConfig = await loadCustomConfig();
-      expect(parsedConfig.endpoints.custom[0].customParams).toEqual({
+      expect(parsedConfig.endpoints.custom[0].customParams).toBeUndefined();
+      expect(expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams).toEqual({
         defaultParamsEndpoint: 'openrouter',
         paramDefinitions: [
           {
@@ -547,7 +562,8 @@ describe('loadCustomConfig', () => {
       loadYaml.mockReturnValue(openRouterConfig);
 
       const parsedConfig = await loadCustomConfig();
-      expect(parsedConfig.endpoints.custom[0].customParams).toMatchObject({
+      expect(parsedConfig.endpoints.custom[0].customParams).toBeUndefined();
+      expect(expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams).toMatchObject({
         defaultParamsEndpoint: 'openrouter',
         paramDefinitions: [
           {
@@ -576,7 +592,10 @@ describe('loadCustomConfig', () => {
       loadYaml.mockReturnValueOnce(config);
 
       const loaded = await loadCustomConfig();
-      expect(loaded.endpoints.custom[0].customParams.defaultParamsEndpoint).toBe('openrouter');
+      expect(loaded.endpoints.custom[0].customParams.defaultParamsEndpoint).toBe('');
+      expect(
+        expandCustomEndpoint(loaded.endpoints.custom[0]).customParams.defaultParamsEndpoint,
+      ).toBe('openrouter');
     });
 
     it('preserves explicit OpenRouter promptCache defaults', async () => {
@@ -604,6 +623,11 @@ describe('loadCustomConfig', () => {
 
       const parsedConfig = await loadCustomConfig();
       expect(parsedConfig.endpoints.custom[0].customParams.paramDefinitions).toEqual([
+        { key: 'promptCache', default: false },
+      ]);
+      expect(
+        expandCustomEndpoint(parsedConfig.endpoints.custom[0]).customParams.paramDefinitions,
+      ).toEqual([
         {
           columnSpan: 1,
           component: 'switch',

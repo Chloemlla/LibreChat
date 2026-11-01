@@ -2,14 +2,17 @@ import { useMemo, useState, useCallback } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
+import {
+  toolPanelSpacingClassName,
+  useToolExpansion,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
-import { useToolCallIntent } from './Parts/intent';
 import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
@@ -299,7 +302,7 @@ function FileHeader({
         <button
           type="button"
           onClick={onOpenPreview}
-          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-focus-subtle min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
+          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-focus-subtle min-w-0 truncate text-start text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
           aria-label={`${localize('com_ui_preview')}: ${fileName}`}
         >
           {fileName}
@@ -314,7 +317,7 @@ function FileHeader({
           className="flex cursor-help items-center"
         >
           <span
-            className="bg-surface-tertiary text-text-secondary shrink-0 cursor-help rounded px-1.5 py-0.5 text-[11px] leading-none tabular-nums"
+            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded px-1.5 py-0.5 leading-none tabular-nums"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
@@ -323,7 +326,7 @@ function FileHeader({
       )}
       <span className="flex-1" />
       {sortedPages && sortedPages.length > 0 && (
-        <span className="text-text-secondary shrink-0 text-[11px]">
+        <span className="text-text-secondary text-2xs shrink-0">
           {localize('com_file_pages', { pages: sortedPages.join(', ') })}
         </span>
       )}

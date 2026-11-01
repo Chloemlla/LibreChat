@@ -4,7 +4,6 @@ import {
   VerifyEmail,
   Registration,
   ResetPassword,
-  ApiErrorWatcher,
   TwoFactorScreen,
   TwoFactorSetupScreen,
   RequestPasswordReset,
@@ -17,6 +16,7 @@ import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
 import ConsentRoute from './ConsentRoute';
 import MarketplaceRoute from './Marketplace';
+import { codeSetupRoute } from './CodeSetup';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
@@ -30,7 +30,6 @@ const AuthLayout = () => (
     <WithRum>
       <Outlet />
     </WithRum>
-    <ApiErrorWatcher />
   </AuthContextProvider>
 );
 
@@ -141,6 +140,7 @@ export const router = createBrowserRouter(
               ],
             },
             dashboardRoutes,
+            codeSetupRoute,
             {
               path: '/',
               element: <Root />,

@@ -86,7 +86,7 @@ describe('Experimental server configuration', () => {
   it('configures routed subagent controls before a worker accepts requests', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
     const routingIndex = source.indexOf(
-      'await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);',
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
     );
     const listenIndex = source.indexOf('const server = app.listen');
 
@@ -95,37 +95,43 @@ describe('Experimental server configuration', () => {
     expect(listenIndex).toBeGreaterThan(routingIndex);
   });
 
-  it('reads the merged config for startup consumers and base-only barriers for module loading', () => {
-    const appConfigIndex = source.indexOf('const appConfig = await getAppConfig();');
-    const baseConfigIndex = source.indexOf(
-      'const baseAppConfig = await getAppConfig({ baseOnly: true });',
-    );
-    const eventRuntimeIndex = source.indexOf(
-      'configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);',
-    );
-    const listenIndex = source.indexOf('const server = app.listen');
-
-    expect(appConfigIndex).toBeGreaterThan(-1);
-    expect(baseConfigIndex).toBeGreaterThan(appConfigIndex);
-    // Rollout barriers are process-wide, so they read the base config, not `__base__` overrides.
-    expect(eventRuntimeIndex).toBeGreaterThan(baseConfigIndex);
-    expect(listenIndex).toBeGreaterThan(eventRuntimeIndex);
-    // The startup consumers must never regress to the base-only read, which skips the DB
-    // override merge and silently ignores admin-panel edits.
-    expect(source).not.toContain('const appConfig = await getAppConfig({ baseOnly: true });');
-  });
 
   it('passes the same idle recovery policy to both server startup paths', () => {
     const standard = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-    for (const [entrypoint, config] of [
-      [source, 'baseAppConfig'],
-      [standard, 'appConfig'],
-    ]) {
+    for (const entrypoint of [source, standard]) {
       const start = entrypoint.indexOf('await initializeAgentTriggerService({');
       expect(start).toBeGreaterThan(-1);
       const call = entrypoint.slice(start, entrypoint.indexOf('});', start));
-      expect(call).toContain(`idlePolling: ${config}?.endpoints?.agents?.eventDriven?.idlePolling`);
+      expect(call).toContain('idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling');
+      expect(call.replace(/\s+/g, ' ')).toContain(
+        'deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays',
+      );
     }
+  });
+
+  it('boots from librechat.yaml only, like the standard entry, so `__base__` overrides never reach worker-wide state', () => {
+    const standard = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+    for (const entrypoint of [source, standard]) {
+      const reads = entrypoint.match(/await getAppConfig\([^)]*\)/g);
+      expect(reads).toEqual(['await getAppConfig({ baseOnly: true })']);
+      const readIndex = entrypoint.indexOf(
+        'const appConfig = await getAppConfig({ baseOnly: true });',
+      );
+      expect(readIndex).toBeGreaterThan(-1);
+      for (const consumer of [
+        'initializeFileStorage(appConfig);',
+        'initializeGitHubSkillSync(appConfig);',
+        'startSkillDeletionSweep(appConfig.skillDeletion);',
+        'await performStartupChecks(appConfig);',
+        'await configureSocialLogins(app, appConfig);',
+      ]) {
+        expect(entrypoint.indexOf(consumer)).toBeGreaterThan(readIndex);
+      }
+    }
+    expect(source).toContain(
+      'expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });',
+    );
+    expect(source).not.toContain('baseAppConfig');
   });
 
   it('matches the standard server pre-authentication tenant routes', () => {

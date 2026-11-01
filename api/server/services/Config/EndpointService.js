@@ -26,7 +26,6 @@ function getEndpointEnvironmentConfig(env = process.env) {
     AZURE_ASSISTANTS_BASE_URL,
   } = env ?? {};
 
-  const userProvidedOpenAI = isUserProvided(openAIApiKey);
   const anthropicUsesVertex = isEnabled(env?.ANTHROPIC_USE_VERTEX);
   const bedrockUserProvidedCredential = [
     env?.BEDROCK_AWS_BEARER_TOKEN,
@@ -37,9 +36,6 @@ function getEndpointEnvironmentConfig(env = process.env) {
 
   return {
     googleKey,
-    openAIApiKey,
-    azureOpenAIApiKey,
-    userProvidedOpenAI,
     [EModelEndpoint.anthropic]: generateConfig(anthropicUsesVertex ? 'true' : anthropicApiKey),
     [EModelEndpoint.openAI]: generateConfig(openAIApiKey, OPENAI_REVERSE_PROXY),
     [EModelEndpoint.azureOpenAI]: generateConfig(azureOpenAIApiKey, AZURE_OPENAI_BASEURL),

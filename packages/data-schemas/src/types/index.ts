@@ -8,6 +8,7 @@ export * from './user';
 export * from './token';
 export * from './refreshTokenBridge';
 export * from './openidRefreshFlight';
+export * from './resourceLock';
 export * from './convo';
 export * from './chatProject';
 export * from './session';
@@ -36,6 +37,7 @@ export * from './prompts';
 /* Skills */
 export * from './skill';
 export * from './skillSync';
+export * from './skillDeletion';
 export * from './triggerDelivery';
 export * from './queuedTurn';
 export * from './schedule';

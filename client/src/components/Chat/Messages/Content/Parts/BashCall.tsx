@@ -1,24 +1,31 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import { Button } from '@librechat/client';
+import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import {
+  toolPanelSpacingClassName,
+  useToolContentPending,
+  useFollowScroll,
+  useToolCallIntent,
+} from '@librechat/chat/react';
+import {
+  parseBackgroundHandle,
+  splitBackgroundAttachments,
+  parseJsonField,
+  areToolCallArgsComplete,
+  parseCommandOutput,
+} from '@librechat/chat';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolContentPending } from '../disclosure';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from '../rows';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
-import useFollowScroll from './useFollowScroll';
 import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
-import { parseCommandOutput } from './command';
-import { useToolCallIntent } from './intent';
 import PtcToolTrace from './PtcToolTrace';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -40,6 +47,7 @@ export default function BashCall({
   hideAttachments = false,
   onExpand,
   toolCallId,
+  stepId,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
@@ -55,8 +63,10 @@ export default function BashCall({
   hideAttachments?: boolean;
   onExpand?: () => void;
   toolCallId?: string;
+  stepId?: string;
 }) {
   const localize = useLocalize();
+  const [showTimeoutDetails, setShowTimeoutDetails] = useState(false);
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
   const { useSandboxStarting } = useMessagePartsHost();
@@ -93,9 +103,11 @@ export default function BashCall({
               text: result.stderr,
               className: result.failed ? 'text-status-error' : 'text-text-secondary',
             },
-            { text: result.trailer, className: 'text-text-tertiary' },
+            ...(!result.timedOut || showTimeoutDetails
+              ? [{ text: result.trailer, className: 'text-text-tertiary' }]
+              : []),
           ],
-    [result],
+    [result, showTimeoutDetails],
   );
   /** A backgrounded call's persisted output stays the dispatch handle until
    *  the detached run settles and patches it; render a background state
@@ -185,7 +197,12 @@ export default function BashCall({
     <>
       <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -234,7 +251,10 @@ export default function BashCall({
                   isCopied={isCopied}
                   onClick={handleCopy}
                   disabled={contentPending}
-                  className={cn('bg-surface-code absolute top-1 right-1.5 z-[1]', PANE_COPY_REVEAL)}
+                  className={cn(
+                    'bg-surface-code absolute inset-e-1.5 top-1 z-[1]',
+                    PANE_COPY_REVEAL,
+                  )}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
@@ -242,7 +262,10 @@ export default function BashCall({
                   onScroll={onCommandPaneScroll}
                   className="max-h-[18.75rem] overflow-auto"
                 >
-                  <pre className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap">
+                  <pre
+                    dir="ltr"
+                    className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap"
+                  >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
                     </span>
@@ -275,6 +298,22 @@ export default function BashCall({
                     segments={outputSegments}
                     variant="terminal"
                   />
+                )}
+                {result?.timedOut === true && (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-text-secondary">
+                      {localize('com_ui_command_timeout_note')}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="inline-link"
+                      size="bare"
+                      aria-expanded={showTimeoutDetails}
+                      onClick={() => setShowTimeoutDetails((previous) => !previous)}
+                    >
+                      {localize(showTimeoutDetails ? 'com_ui_hide' : 'com_ui_details')}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}

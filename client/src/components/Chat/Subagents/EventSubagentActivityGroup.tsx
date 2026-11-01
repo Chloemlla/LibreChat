@@ -2,14 +2,18 @@ import { useCallback, useId, useMemo, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { Button, cn } from '@librechat/client';
 import { Bot, ChevronDown } from 'lucide-react';
+import { getMessageRowWidthClass } from '@librechat/chat/components';
+import {
+  activeSubagentPanel,
+  isLiveSubagentStatus,
+  subagentStatusDotClass,
+  subagentStatusLabelKey,
+  eventSubagentSelection,
+} from '@librechat/chat/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { isLiveSubagentStatus, subagentStatusDotClass, subagentStatusLabelKey } from './status';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import { useChatSurface, useOpenSubagentPanel } from './surface';
 import { useParentSubagents } from './ParentSubagentsProvider';
-import { eventSubagentSelection } from './eventSelection';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { renderAgentAvatar } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -130,6 +134,7 @@ function EventSubagentRows({
         if (freshSelection != null) {
           setSelected((current) => {
             if (
+              current?.event?.pinnedTask === true ||
               current?.durable?.threadId !== selection.durable?.threadId ||
               current?.durable?.taskId !== selection.durable?.taskId
             ) {
@@ -148,18 +153,19 @@ function EventSubagentRows({
       /** `text-text-primary` on the root, like `SubagentActivity` and
        *  `SubagentThreadPanel`: the child rows are raw buttons that inherit
        *  their label color, and without a themed ancestor they bottom out at
-       *  the unthemed black body color — invisible on the dark surface. */
+       *  the unthemed black body color, invisible on the dark surface. */
       className="border-border-light bg-surface-secondary/40 text-text-primary my-2 overflow-hidden rounded-lg border"
       data-event-subagent-group={eventChildren[0]?.parentMessageId}
+      data-event-subagent-conversation={conversationId}
     >
       <Button
-        variant="ghost"
+        variant="quiet"
         type="button"
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_subagent_activity')}: ${summary}`}
-        className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-lg px-3 py-2 text-left focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-inset"
+        className="focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start px-3 text-start focus-visible:ring-offset-0 focus-visible:ring-inset"
       >
         <Bot size={15} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{summary}</span>
@@ -184,11 +190,12 @@ function EventSubagentRows({
               type="button"
               disabled={!canOpen}
               onClick={() => openChild(child)}
+              data-subagent-thread={child.threadId}
               data-subagent-tool-call={`event-thread:${child.threadId}`}
               data-subagent-parent-message={child.parentMessageId}
               data-subagent-part-index="0"
               className={cn(
-                'focus-visible:ring-ring-primary flex w-full items-center gap-2 px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
+                'focus-visible:ring-ring-primary flex w-full items-center gap-2 px-3 py-2 text-start text-sm focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
                 canOpen ? 'hover:bg-surface-hover' : 'cursor-default opacity-70',
               )}
             >

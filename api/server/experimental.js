@@ -41,6 +41,9 @@ const {
   applyManifestBranding,
   resolveSiteBranding,
   injectConfiguredFooterBootstrap,
+  injectColorModeHandoff,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   configureServerTimeouts,
@@ -59,6 +62,7 @@ const {
   cacheConfig,
   createClusteredFileSweep,
   describeSetupRequirement,
+  createRequestSanitizer,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -66,6 +70,7 @@ const { capabilityContextMiddleware } = require('./middleware/roles/capabilities
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { startExpiredFileSweep } = require('./services/Files/process');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const { initializeAgentTriggerService } = require('./services/Agents/triggers');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const {
@@ -80,6 +85,7 @@ const {
   updateAccessPermissions,
   countUsersByRole,
   seedDatabase,
+  recordAuditEntry,
   sweepOrphanedPreviews,
 } = require('~/models');
 const { checkMigrations } = require('./services/start/migration');
@@ -369,6 +375,7 @@ if (cluster.isMaster) {
   // but an already-fired scheduled generation can still reach HITL here. Settle
   // its durable run when the generic approval runtime expires it.
   GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
+  GenerationJobManager.setAdmissionGuard(agentEventMethods.isAgentTriggerPrincipalActive);
   GenerationJobManager.setTerminalHostActionHandler(
     createAgentEventTerminalHandler(agentEventMethods, {
       resumeDetachedAction: resumeAgentEventDetachedAction,
@@ -495,32 +502,36 @@ if (cluster.isMaster) {
       logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
     });
 
-    /** Initialize app configuration — merged, so admin-panel `__base__` overrides reach the
-     *  startup consumers below. */
-    const appConfig = await getAppConfig();
+    /**
+     * Boot reads librechat.yaml only, as `server/index.js` does. File storage, skill sync and
+     * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
+     * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
+     */
+    const appConfig = await getAppConfig({ baseOnly: true });
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
+    startSkillDeletionSweep(appConfig.skillDeletion);
     // Register configured tool-approval policy hooks (mirrors the standard startup path).
-    // Honors the `enabled` kill switch; hooks are base-config-only, registered process-wide.
-    // Read from the BASE config specifically — `appConfig` above (getAppConfig() with no
-    // principal) still merges DB `__base__` overrides, which must not drive which hook
-    // modules load in every worker. index.js splits the same way: merged config for its
-    // startup consumers, this dedicated base-only read for event rollout and hooks.
-    const baseAppConfig = await getAppConfig({ baseOnly: true });
-    await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
+    // Honors the `enabled` kill switch; hooks are registered process-wide.
+    await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
     registerBackgroundTaskShutdown({
-      interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+      interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
       getBudgetMs: clusterShutdownBudgetMs,
     });
-    configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
-    const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
+    configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+    const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
     await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
       basePath: path.resolve(__dirname, '../..'),
     });
     expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });
     await runAsSystem(async () => {
       await performStartupChecks(appConfig);
-      await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+      await updateInterfacePerms({
+        appConfig,
+        getRoleByName,
+        updateAccessPermissions,
+        recordAuditEntry,
+      });
     });
 
     /* Route modules build their rate limiters as they load, so they load only after the
@@ -564,7 +575,15 @@ if (cluster.isMaster) {
        so the answer is the deployment's base configuration, like index.js. */
     indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
       customFooter: process.env.CUSTOM_FOOTER,
+      landingFooter: appConfig?.interfaceConfig?.landingFooter,
     });
+
+    indexHTML = injectColorModeHandoff(indexHTML, appConfig?.interfaceConfig?.colorModeFromUrl);
+    const indexShell = createDeploymentThemeShell(
+      indexHTML,
+      appConfig?.interfaceConfig?.theme,
+      readBundledThemeBoot(appConfig.paths.dist),
+    );
 
     const cspPolicy = createCspPolicy();
     const shellCache = shellCacheHeaders(cspPolicy != null);
@@ -575,7 +594,10 @@ if (cluster.isMaster) {
 
       const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
       const saneLang = escapeHtmlAttribute(lang);
-      let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, () => `lang="${saneLang}"`);
+      let updatedIndexHtml = indexShell(req, res).replace(
+        /lang="en-US"/g,
+        () => `lang="${saneLang}"`,
+      );
       updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
 
       /* Nonce last: every injected script above must be stamped too. */
@@ -613,7 +635,7 @@ if (cluster.isMaster) {
       next();
     });
 
-    app.use(mongoSanitize());
+    app.use(createRequestSanitizer(mongoSanitize));
     app.use(cors());
     app.use(cookieParser());
 
@@ -675,6 +697,7 @@ if (cluster.isMaster) {
     app.use('/api/search', routes.search);
     app.use('/api/messages', routes.messages);
     app.use('/api/convos', routes.convos);
+    app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
     app.use('/api/presets', routes.presets);
     app.use('/api/projects', routes.projects);
     app.use('/api/prompts', routes.prompts);
@@ -742,10 +765,12 @@ if (cluster.isMaster) {
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:
-            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+            appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
           completionReceiptBatching:
-            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
-          idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+            appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+          deadLetterRetentionDays:
+            appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
+          idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
 
         /** One worker announces the deployment's state; every worker repeating it is noise. */

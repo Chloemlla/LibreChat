@@ -2,17 +2,21 @@ const mongoose = require('mongoose');
 const { CacheKeys } = require('librechat-data-provider');
 const { AppService, logger } = require('@librechat/data-schemas');
 const {
+  isEnabled,
   applyMCPBootConfig,
+  expandCustomEndpoint,
+  createAppConfigService,
+  applyLoadedConfig,
+  clearMcpConfigCache,
+  createCodeEnvironmentRegistry,
+  createConfigCacheInvalidation,
+  createRedisConfigInvalidationPubSub,
+  mergeAccessibleCodeEnvironments,
+  ioredisClient,
   cacheConfig,
   standardCache,
-  ioredisClient,
-  createAppConfigService,
-  clearMcpConfigCache,
-  createIoRedisSubscriber,
-  createCodeEnvironmentRegistry,
-  mergeAccessibleCodeEnvironments,
 } = require('@librechat/api');
-const { setCachedTools, invalidateCachedTools } = require('./getCachedTools');
+const { setCachedTools } = require('./getCachedTools');
 const { loadAndFormatTools } = require('~/server/services/start/tools');
 const loadCustomConfig = require('./loadCustomConfig');
 const getLogStores = require('~/cache/getLogStores');
@@ -45,35 +49,19 @@ const loadBaseConfig = async (mode) => {
     adminIncluded: config.includedTools,
     directory: paths.structuredTools,
   });
-  return AppService({ config, paths, systemTools });
+  return AppService({ config, paths, systemTools, expandCustomEndpoint });
 };
 
-/**
- * Cross-instance config invalidation. The APP_CONFIG namespace is deliberately
- * forced to per-process memory, so without a broadcast a config saved on one
- * replica leaves its peers serving the old value — indefinitely for the base
- * config, which is cached without a TTL. Absent when USE_REDIS is off: a single
- * instance has no peers, and no subscriber connection is opened on its behalf.
- */
-const configInvalidation =
-  ioredisClient == null
-    ? undefined
-    : {
-        bus: ioredisClient,
-        createSubscriber: () =>
-          createIoRedisSubscriber(ioredisClient, '[ConfigInvalidation] subscriber'),
-        throttleMs: cacheConfig.CONFIG_INVALIDATION_THROTTLE_MS,
-        dedupeLimit: cacheConfig.CONFIG_INVALIDATION_DEDUPE_LIMIT,
-      };
-
-const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfigService({
+const appConfigService = createAppConfigService({
   loadBaseConfig,
+  onBaseConfigPublished: applyLoadedConfig,
   setCachedTools,
   getCache: getLogStores,
   cacheKeys: CacheKeys,
   getApplicableConfigs: db.getApplicableConfigs,
   getUserPrincipals: db.getUserPrincipals,
-  invalidation: configInvalidation,
+  overrideEnvAllowlist: process.env.CONFIG_OVERRIDE_ENV_ALLOWLIST,
+  rederiveEndpoints: isEnabled(process.env.CONFIG_REDERIVE_ENDPOINTS),
   augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
     if (!options.userId) return appConfig;
     return mergeAccessibleCodeEnvironments({
@@ -89,42 +77,48 @@ const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfi
     });
   },
 });
+const {
+  getAppConfig,
+  resolveConfigLayers,
+  clearAppConfigCache,
+  clearOverrideCache,
+  reloadBaseConfig,
+  overrideCacheTtl,
+  rederiveEndpoints,
+} = appConfigService;
 
 // Config owns the reader; models never import this module to obtain it.
 db.initializeMessageBudget(getAppConfig);
 
 /**
- * Invalidate all config-related caches after an admin config mutation.
- * Clears the base config, per-principal override caches, tool caches,
- * and the MCP config-source server cache, then re-applies the MCP boot settings.
+ * Admin config writes clear the per-principal override caches, the MCP config-source servers
+ * and the YAML base config. Base-only sections such as `filters` and `messageFilter` exist only
+ * in librechat.yaml, and an admin write is how a running server picks up an edit to them: the
+ * next read reloads the YAML (keeping the last good config if it fails) and republishes the
+ * tools derived from it. With Redis, the clear is broadcast so every instance reloads its YAML
+ * and drops its in-process merged config.
+ */
+const configCacheInvalidation = createConfigCacheInvalidation({
+  clears: [
+    { label: 'clearAppConfigCache', clear: () => clearAppConfigCache() },
+    { label: 'clearOverrideCache', clear: clearOverrideCache },
+    { label: 'clearMcpConfigCache', clear: () => clearMcpConfigCache() },
+  ],
+  load: reloadBaseConfig,
+  pubsub: createRedisConfigInvalidationPubSub({
+    useRedis: cacheConfig.USE_REDIS,
+    client: ioredisClient,
+    namespace: cacheConfig.REDIS_KEY_PREFIX,
+  }),
+});
+
+/**
+ * Invalidate the config caches an admin config mutation affects, on every instance.
  * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
  */
 async function invalidateConfigCaches(tenantId) {
-  const results = await Promise.allSettled([
-    clearAppConfigCache(),
-    clearOverrideCache(tenantId),
-    invalidateCachedTools({ invalidateGlobal: true }),
-    clearMcpConfigCache(),
-  ]);
-  const labels = [
-    'clearAppConfigCache',
-    'clearOverrideCache',
-    'invalidateCachedTools',
-    'clearMcpConfigCache',
-  ];
-  for (let i = 0; i < results.length; i++) {
-    if (results[i].status === 'rejected') {
-      logger.error(`[invalidateConfigCaches] ${labels[i]} failed:`, results[i].reason);
-    }
-  }
-
-  /**
-   * Deliberately outside the batch above and after it settles: the re-read has to see the
-   * config the mutation just wrote, and `getAppConfig` would otherwise resolve from the
-   * cache `clearAppConfigCache` is still clearing — installing the pre-change MCP
-   * allowlists over the new ones. `applyMCPBootConfig` is a no-op when the MCP registry
-   * has not been created yet, which is the normal case for a save during startup.
-   */
+  await configCacheInvalidation.invalidate(tenantId);
+  // Read after every clear settles; a concurrent cached read would reinstall old allowlists.
   try {
     const appConfig = await getAppConfig({ baseOnly: true });
     applyMCPBootConfig(appConfig?.mcpSettings);
@@ -133,11 +127,23 @@ async function invalidateConfigCaches(tenantId) {
   }
 }
 
+/**
+ * The same clear for the admin reload route, then librechat.yaml loaded again here and, when it
+ * loaded, the broadcast; resolves with what each step reached.
+ * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
+ * @returns {Promise<import('@librechat/api').ConfigReloadReport>}
+ */
+function reloadConfigCaches(tenantId) {
+  return configCacheInvalidation.reload(tenantId);
+}
+
 module.exports = {
   getAppConfig,
-  clearAppConfigCache,
-  clearOverrideCache,
+  resolveConfigLayers,
+  overrideCacheTtl,
+  rederiveEndpoints,
   invalidateConfigCaches,
+  reloadConfigCaches,
   getCodeEnvironmentRegistry,
   invalidateCodeEnvironmentConfigCache,
 };

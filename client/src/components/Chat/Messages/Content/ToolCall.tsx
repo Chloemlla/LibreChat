@@ -1,5 +1,7 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
+import { hasToolParams } from '@librechat/chat';
+import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import {
   Constants,
   dataService,
@@ -7,13 +9,16 @@ import {
   actionDomainSeparator,
   splitToolCallName,
 } from 'librechat-data-provider';
-import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import {
   toolPanelSpacingClassName,
+  useToolContentRequest,
   useToolExpansion,
   LoneGroupContext,
   SoleToolContext,
-} from './disclosure';
+  useToolCallIntent,
+  useRowHandoff,
+} from '@librechat/chat/react';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
@@ -21,21 +26,18 @@ import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { TOOL_ROW_CLASSES } from './rows';
-import { hasToolParams } from './params';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
-import useRowHandoff from './handoff';
 
 export default function ToolCall({
   initialProgress = 0.1,
   isLast = false,
   isSubmitting,
   toolCallId,
+  stepId,
   name,
   args: _args = '',
   output,
@@ -54,6 +56,7 @@ export default function ToolCall({
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
+  stepId?: string;
   name: string;
   args: string | Record<string, unknown>;
   output?: string | null;
@@ -246,6 +249,8 @@ export default function ToolCall({
     hasInfo &&
     (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;
+  /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */
+  useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
@@ -434,6 +439,8 @@ export default function ToolCall({
           ref={rowRef}
           data-testid="tool-call"
           data-tool-call-id={toolCallId}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
         >
           <ProgressText
             phase={phase}
@@ -484,7 +491,7 @@ export default function ToolCall({
         <div className="flex w-full flex-col gap-2.5">
           <div className="mt-2 mb-1">
             <Button
-              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
+              className="inline-flex items-center justify-center rounded-xl font-medium"
               variant="default"
               rel="noopener noreferrer"
               disabled={oauthBinding === 'pending'}

@@ -15,6 +15,22 @@ import {
   WIDGET_NODE_TYPE,
 } from '~/components/Widgets';
 import {
+  code,
+  a,
+  p,
+  img,
+  table,
+  ul,
+  ol,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  blockquote,
+} from './MarkdownComponents';
+import {
   mcpUIResourcePlugin,
   MCPUIResource,
   MCPUIResourceCarousel,
@@ -22,7 +38,6 @@ import {
 import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
-import { code, a, p, img, table } from './MarkdownComponents';
 import { unicodeCitation } from '~/components/Web';
 
 /**
@@ -67,6 +82,15 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   p,
   img,
   table,
+  ul,
+  ol,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  blockquote,
   artifact: Artifact,
   citation: Citation,
   'highlighted-text': HighlightedText,

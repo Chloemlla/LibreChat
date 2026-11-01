@@ -26,3 +26,11 @@ apply_patch 在当前环境可用。
   *** End Patch
 
   末尾不能多写 ***。工具只认精确的 *** Begin Patch 作为第一行。
+
+## Repository architecture
+
+`AGENTS.md` is the repository's contributor guidance. Backend code lives in `packages/api`
+(TypeScript) and `packages/data-schemas` (database methods); `api` is legacy Express wiring.
+Shared API types and services live in `packages/data-provider`, and the React app lives in
+`client` with shared primitives in `packages/client`. Chat state, transport and message components
+are moving into `packages/chat` (`@librechat/chat`), which never imports the app.

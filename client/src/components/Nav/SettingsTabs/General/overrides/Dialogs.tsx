@@ -5,11 +5,7 @@ import {
   Label,
   OGDialog,
   OGDialogTemplate,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Dropdown,
   Spinner,
   Textarea,
   useToastContext,
@@ -268,21 +264,20 @@ export function ReplaceDialog({
           <div className="flex flex-col gap-4">
             {principalEditable && (
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="admin-config-principal-type">
+                <Label id="admin-config-principal-type">
                   {localize('com_ui_admin_config_principal_type')}
                 </Label>
-                <Select value={principalType} onValueChange={changePrincipalType}>
-                  <SelectTrigger id="admin-config-principal-type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PRINCIPAL_TYPES.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {localize(PRINCIPAL_LABELS[type])}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Dropdown
+                  value={principalType}
+                  onChange={changePrincipalType}
+                  options={PRINCIPAL_TYPES.map((value) => ({
+                    value,
+                    label: localize(PRINCIPAL_LABELS[value]),
+                  }))}
+                  variant="field"
+                  sameWidth
+                  aria-labelledby="admin-config-principal-type"
+                />
               </div>
             )}
             {principalEditable && (

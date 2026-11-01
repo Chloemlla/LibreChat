@@ -6,11 +6,7 @@ import {
   Label,
   OGDialog,
   OGDialogTemplate,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Dropdown,
   Spinner,
   Switch,
   Textarea,
@@ -137,19 +133,18 @@ export default function ClientDialog({ client, open, onOpenChange, onSecret }: C
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="oauth-client-type">{localize('com_ui_oauth_client_type')}</Label>
-              <Select value={type} onValueChange={changeType}>
-                <SelectTrigger id="oauth-client-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CLIENT_TYPES.map((entry) => (
-                    <SelectItem key={entry} value={entry}>
-                      {localize(CLIENT_TYPE_LABELS[entry])}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label id="oauth-client-type">{localize('com_ui_oauth_client_type')}</Label>
+              <Dropdown
+                value={type}
+                onChange={changeType}
+                options={CLIENT_TYPES.map((value) => ({
+                  value,
+                  label: localize(CLIENT_TYPE_LABELS[value]),
+                }))}
+                variant="field"
+                sameWidth
+                aria-labelledby="oauth-client-type"
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="oauth-client-description">{localize('com_ui_description')}</Label>

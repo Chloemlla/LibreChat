@@ -2,6 +2,7 @@ const path = require('path');
 const axios = require('axios');
 const {
   loadYaml,
+  recordLoadedConfig,
   redactConfigSecretMaps,
   createCustomConfigLoader,
   resolveConfigEnvPath,
@@ -176,6 +177,7 @@ const loadCustomConfig = createCustomConfigLoader({
   fetchRemote: fetchRemoteWithEnvOverrides,
   defaultConfigPath,
   redactConfig: redactConfigSecretMaps,
+  onLoad: recordLoadedConfig,
 });
 
 /** Reports the applied overrides under the same `printConfig` gate as the config dump. */

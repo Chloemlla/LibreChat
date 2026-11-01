@@ -1,4 +1,12 @@
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import {
+  backgroundTaskOutcome,
+  parseBackgroundTaskOutput,
+  parseBackgroundHandle,
+  splitBackgroundAttachments,
+  isBashProgrammaticToolCall,
+  parseCommandOutput,
+} from '@librechat/chat';
 import type {
   Agents,
   TAttachment,
@@ -7,13 +15,9 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { ToolPreparationInput } from './preparation';
-import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './Parts/background';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './Parts/handle';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
-import { isBashProgrammaticToolCall } from './routing';
-import { parseCommandOutput } from './Parts/command';
 import { isToolCallPreparing } from './preparation';
 import { isError } from './ToolOutput';
 
@@ -232,12 +236,20 @@ export function getToolMeta(
 
 export type SpanOutcome = { failed: number; cancelled: number };
 
-/** The most severe terminal outcome replaces identity glyphs on every summary. */
+/** True when every call a summary stands for failed: the one case where the
+ *  summary itself, not only the failed rows and the count, reads as failed. */
+export function isSpanFailed(failed: number, total: number): boolean {
+  return failed > 0 && failed >= total;
+}
+
+/** Mixed outcomes keep tool identity. The count still exposes every failed
+ *  call, without turning the whole summary into an error indicator. */
 export function getOutcomeStatus({
   failed,
   cancelled,
-}: SpanOutcome): 'failed' | 'cancelled' | undefined {
-  if (failed > 0) {
+  total,
+}: SpanOutcome & { total: number }): 'failed' | 'cancelled' | undefined {
+  if (isSpanFailed(failed, total)) {
     return 'failed';
   }
   if (cancelled > 0) {

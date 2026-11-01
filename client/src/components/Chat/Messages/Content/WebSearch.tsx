@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import {
+  useToolExpansion,
+  useToolContentRequest,
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import {
   Button,
   HoverCard,
@@ -16,18 +24,14 @@ import type {
   PartMetadata,
   AnswerBoxResult,
 } from 'librechat-data-provider';
-import { useToolExpansion, useToolContentRequest, toolPanelSpacingClassName } from './disclosure';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import parseJsonField from './Parts/parseJsonField';
-import { useToolCallIntent } from './Parts/intent';
 import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
-import { ROW_GLYPH_SLOT } from './rows';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 
@@ -49,7 +53,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
             'h-[1.375rem] w-[1.375rem]',
-            i > 0 && '-ml-2.5',
+            i > 0 && '-ms-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
         >
@@ -253,7 +257,7 @@ export default function WebSearch({
           <Button
             variant="disclosure"
             className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal',
+              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 rounded-full font-normal',
               /** This row is a status line, not a padded control: the shared
                *  recipe's color transition would turn its hover into a fade,
                *  and the chevron reveal beside it is deliberately instant. */
@@ -292,10 +296,10 @@ export default function WebSearch({
                   hover-card reveal and the icon geometry stay local. */}
               <HoverCardTrigger asChild>
                 <Button
-                  variant="ghost"
+                  variant="quiet"
                   size="icon"
                   className={cn(
-                    'text-text-secondary ml-auto size-auto cursor-help rounded-md p-1 opacity-0',
+                    'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
                     'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
                     'focus-visible:opacity-100',
                   )}
@@ -311,7 +315,7 @@ export default function WebSearch({
                   <div className="max-h-[60vh] space-y-2 overflow-y-auto">
                     {query && (
                       <div>
-                        <div className="text-text-secondary text-[10px] font-medium tracking-wide uppercase">
+                        <div className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
                           {localize('com_ui_search_query')}
                         </div>
                         <div className="text-text-primary mt-0.5 text-sm">{query}</div>
@@ -379,15 +383,15 @@ export default function WebSearch({
                             {source.title || domain}
                           </span>
                           {snippet && (
-                            <span className="text-text-secondary mt-0.5 line-clamp-2 block text-[11px] leading-relaxed">
+                            <span className="text-text-secondary text-2xs mt-0.5 line-clamp-2 block leading-relaxed">
                               {snippet}
                             </span>
                           )}
                         </span>
-                        <span className="shrink-0 text-right">
-                          <span className="text-text-secondary block text-[11px]">{domain}</span>
+                        <span className="shrink-0 text-end">
+                          <span className="text-text-secondary text-2xs block">{domain}</span>
                           {source.date && (
-                            <span className="text-text-secondary block text-[10px]">
+                            <span className="text-text-secondary text-3xs block">
                               {source.date}
                             </span>
                           )}

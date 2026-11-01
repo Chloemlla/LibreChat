@@ -48,7 +48,7 @@ describe('validateTurnstile middleware', () => {
     it('should skip validation and call next()', async () => {
       await validateTurnstile(req, res, next);
 
-      expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+      expect(getAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true, failClosed: true });
       expect(logger.debug).toHaveBeenCalledWith(
         '[validateTurnstile] Turnstile is disabled, skipping validation',
       );
@@ -73,7 +73,11 @@ describe('validateTurnstile middleware', () => {
 
       await validateTurnstile(req, res, next);
 
-      expect(getAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-abc' });
+      expect(getAppConfig).toHaveBeenCalledWith({
+        tenantId: 'tenant-abc',
+        skipRuntimeAugmentation: true,
+        failClosed: true,
+      });
       expect(next).toHaveBeenCalled();
     });
   });

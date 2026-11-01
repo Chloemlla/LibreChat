@@ -48,12 +48,19 @@ const {
   applyManifestBranding,
   resolveSiteBranding,
   injectConfiguredFooterBootstrap,
+  injectColorModeHandoff,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
+  createReadinessHandler,
+  keyvRedisClient,
+  ioredisClient,
+  cacheConfig,
   setupGracefulShutdown,
   updateInterfacePermissions,
   configureMessageFilterRegexValidator,
@@ -66,6 +73,8 @@ const {
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
   describeSetupRequirement,
+  createRequestSanitizer,
+  reportEndpointOverrides,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
@@ -74,11 +83,14 @@ const {
   getRoleByName,
   countUsersByRole,
   seedDatabase,
+  listAllConfigs,
+  recordAuditEntry,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const { initializeAgentTriggerService } = require('./services/Agents/triggers');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
@@ -90,7 +102,7 @@ const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, rederiveEndpoints } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
@@ -141,6 +153,7 @@ const configureGenerationStreams = () => {
     cleanupOnComplete: !isEnabled(process.env.STREAM_KEEP_COMPLETED_JOBS),
   });
   GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
+  GenerationJobManager.setAdmissionGuard(agentEventMethods.isAgentTriggerPrincipalActive);
   GenerationJobManager.setTerminalHostActionHandler(
     createAgentEventTerminalHandler(agentEventMethods, {
       resumeDetachedAction: resumeAgentEventDetachedAction,
@@ -235,18 +248,14 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
-  /* Startup consumers read the merged config (YAML base + admin-panel `__base__` overrides),
-   * so a config saved to the database takes effect on the next boot rather than being
-   * silently ignored. */
-  const appConfig = await getAppConfig();
-  /* Process-wide module loading reads the base config only: a `__base__` override must not
-   * decide which modules every worker imports. Mirrors experimental.js. */
-  const baseAppConfig = await getAppConfig({ baseOnly: true });
-  await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
+  /* Process-wide startup settings come from the deployment YAML. Sign-in policy
+   * resolves the tenant-scoped __base__ override through resolvePreAuthAppConfig. */
+  const appConfig = await getAppConfig({ baseOnly: true });
+  await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
-    interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
   });
-  configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
+  configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
   const projectRoot = path.resolve(__dirname, '../..');
@@ -268,6 +277,7 @@ const startServer = async () => {
     additionalSkills: getDeploymentPluginSkills(),
   });
   initializeGitHubSkillSync(appConfig);
+  startSkillDeletionSweep(appConfig.skillDeletion);
   startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
@@ -275,13 +285,18 @@ const startServer = async () => {
   // previously loaded batch is unregistered). Hooks are read from the BASE config only —
   // they register once, process-wide; per-user/tenant differences belong inside the hook
   // (via its context), not in per-override module lists.
-  const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
+  const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
   await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
     basePath: path.resolve(__dirname, '../..'),
   });
   await runAsSystem(async () => {
     await performStartupChecks(appConfig);
-    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName,
+      updateAccessPermissions,
+      recordAuditEntry,
+    });
   });
 
   /* Route modules build their rate limiters as they load, so they load only after the
@@ -326,7 +341,15 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
+    landingFooter: appConfig?.interfaceConfig?.landingFooter,
   });
+
+  indexHTML = injectColorModeHandoff(indexHTML, appConfig.interfaceConfig?.colorModeFromUrl);
+  const indexShell = createDeploymentThemeShell(
+    indexHTML,
+    appConfig.interfaceConfig?.theme,
+    readBundledThemeBoot(appConfig.paths.dist),
+  );
 
   const cspPolicy = createCspPolicy();
   const shellCache = shellCacheHeaders(cspPolicy != null);
@@ -337,7 +360,10 @@ const startServer = async () => {
 
     const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
     const saneLang = escapeHtmlAttribute(lang);
-    let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, () => `lang="${saneLang}"`);
+    let updatedIndexHtml = indexShell(req, res).replace(
+      /lang="en-US"/g,
+      () => `lang="${saneLang}"`,
+    );
     updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
 
     /* Nonce last: every injected script above must be stamped too. */
@@ -353,12 +379,14 @@ const startServer = async () => {
 
   app.get('/health', (_req, res) => res.status(200).send('OK'));
   app.get('/livez', (_req, res) => res.status(200).send('OK'));
-  app.get('/readyz', (_req, res) => {
-    if (!serverReady) {
-      return res.status(503).send('NOT_READY');
-    }
-    return res.status(200).send('OK');
-  });
+  app.get(
+    '/readyz',
+    createReadinessHandler(() => serverReady, {
+      useRedis: cacheConfig.USE_REDIS,
+      ioredis: ioredisClient,
+      keyv: keyvRedisClient,
+    }),
+  );
 
   /* Middleware */
   app.use(requestContextMiddleware);
@@ -382,7 +410,7 @@ const startServer = async () => {
     next();
   });
 
-  app.use(mongoSanitize());
+  app.use(createRequestSanitizer(mongoSanitize));
   app.use(cors());
   app.use(cookieParser());
 
@@ -459,6 +487,7 @@ const startServer = async () => {
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
+  app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
   app.use('/api/traces', routes.traces);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
@@ -538,6 +567,14 @@ const startServer = async () => {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
       });
+      /** Logs only, so readiness never waits on reading every config document. */
+      reportEndpointOverrides({
+        listConfigs: () => runAsSystem(() => listAllConfigs()),
+        baseYaml: appConfig?.config ?? {},
+        rederiveEndpoints,
+      }).catch((err) => {
+        logger.error('[config] Failed to report endpoint overrides:', err);
+      });
       await checkMigrations();
 
       const inspectFlags = process.execArgv.some((arg) => arg.startsWith('--inspect'));
@@ -550,6 +587,7 @@ const startServer = async () => {
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
         completionReceiptBatching:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+        deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

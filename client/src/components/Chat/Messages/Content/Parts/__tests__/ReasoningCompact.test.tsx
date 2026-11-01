@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { ReasoningCompact } from '../Reasoning';
-import { ROW_GLYPH_SLOT } from '../../rows';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -115,5 +115,41 @@ describe('ReasoningCompact', () => {
     );
 
     expect(screen.getByText('A long stream of reasoning')).toBeInTheDocument();
+  });
+
+  it('shows only the readable text of reasoning mixed with an encrypted payload', () => {
+    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    render(
+      <ReasoningCompact
+        reasoning={`Checking the manifest.\n${encoded}\nRolling back.`}
+        label="Thoughts"
+        showThinking
+      />,
+    );
+
+    const body = screen.getByRole('group', { hidden: true });
+    expect(body).toHaveTextContent('Checking the manifest.');
+    expect(body).toHaveTextContent('Rolling back.');
+    expect(body.textContent).not.toContain(encoded.slice(0, 64));
+  });
+
+  it('holds back a streaming run until it is classified as a word or a payload', () => {
+    const prefix = Buffer.from(Array.from({ length: 75 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    render(
+      <ReasoningCompact
+        reasoning={`Checking the manifest. ${prefix}`}
+        label="Thinking"
+        showThinking
+        isStreaming
+      />,
+    );
+
+    const body = screen.getByRole('group', { hidden: true });
+    expect(body).toHaveTextContent('Checking the manifest.');
+    expect(body.textContent).not.toContain(prefix.slice(0, 32));
   });
 });

@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useAtom, useStore } from 'jotai';
 import * as Popover from '@radix-ui/react-popover';
+import { useAtom, useStore, useAtomValue } from 'jotai';
+import { submissionByIndex } from '@librechat/chat/react';
 import { Button, Input, Slider } from '@librechat/client';
 import { BrainCircuit, ChevronDown, X } from 'lucide-react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ReasoningParameterFormat,
@@ -17,17 +18,17 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
+  TMessage,
   SettingDefinition,
   TConversation,
   TReasoningOverride,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 type ReasoningControlProps = {
   index: number;
@@ -113,19 +114,16 @@ export function ReasoningControl({
   return (
     <Popover.Root modal>
       <Popover.Trigger asChild>
-        {/* Styled as the composer control it sits beside (the Thinking pill in
-            `Composer/Thinking.tsx`) rather than as a restyled `Button`: the
-            open state keeps it lit while its popover is up, which no `Button`
-            variant expresses. */}
-        <button
-          type="button"
+        {/* `composer-trigger` keeps it lit while its popover is up, through the
+            `aria-expanded` the trigger carries. */}
+        <Button
+          variant="composer-trigger"
           disabled={disabled}
-          aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary inline-flex h-8 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
+          aria-label={`${localize('com_ui_composer_thinking')} ${displayValue}`}
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <ChevronDown className="size-3" aria-hidden="true" />
-        </button>
+        </Button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
@@ -143,7 +141,7 @@ export function ReasoningControl({
                 {label}
               </div>
               <div className="text-text-secondary truncate text-xs">
-                {localize('com_ui_reasoning_for_next_message')}
+                {localize('com_ui_composer_thinking')}
               </div>
             </div>
             <Popover.Close asChild>
@@ -151,7 +149,7 @@ export function ReasoningControl({
                 variant="ghost"
                 size="icon-xs"
                 aria-label={localize('com_ui_close')}
-                className="group -mr-1 shrink-0"
+                className="group -me-1 shrink-0"
               >
                 <X
                   className="text-text-secondary group-hover:text-text-primary size-4"
@@ -179,7 +177,7 @@ export function ReasoningControl({
                   <span className="truncate">
                     {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
                   </span>
-                  <span className="truncate text-right">
+                  <span className="truncate text-end">
                     {translated(
                       setting.enumMappings?.[options[options.length - 1]] ??
                         options[options.length - 1],
@@ -203,7 +201,7 @@ export function ReasoningControl({
                         step={range.step ?? 1}
                         onChange={(event) => setNumericValue(event.target.value)}
                         onBlur={commitNumericValue}
-                        className="h-8 w-24 text-right"
+                        className="h-8 w-24 text-end"
                       />
                     </div>
                     <span className="text-text-secondary truncate text-xs">
@@ -251,12 +249,21 @@ export function ReasoningControl({
   );
 }
 
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
+
 type ComposerReasoningOptions = {
   conversation: TConversation | null;
   index: number;
   hasAddedConversation?: boolean;
   enabled?: boolean;
   blockedReasoningKeys?: ReadonlySet<string>;
+  /** The level the branch the next turn extends last ran at; shown until the user picks again. */
+  branchReasoning?: TMessage['reasoningOverride'];
 };
 
 type ComposerReasoningState = {
@@ -271,6 +278,7 @@ export function useComposerReasoning({
   hasAddedConversation = false,
   enabled = true,
   blockedReasoningKeys,
+  branchReasoning,
 }: ComposerReasoningOptions): ComposerReasoningState | null {
   const agentsMap = useAgentsMapContext();
   const { data: fetchedAgent } = useGetAgentByIdQuery(conversation?.agent_id);
@@ -281,7 +289,7 @@ export function useComposerReasoning({
   const [value, setValue] = useAtom(pendingReasoningOverrideFamily(reasoningStateKey));
   const reasoningStore = useStore();
   const placeholderStateKey = getReasoningStateKey(null, index);
-  const submission = useRecoilValue(store.submissionByIndex(index));
+  const submission = useAtomValue(submissionByIndex(index));
   const submissionConversationId =
     submission?.conversation?.conversationId ?? submission?.userMessage?.conversationId;
   const submittedConversationRef = useRef<string | null>(null);
@@ -336,6 +344,11 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
+  const { modelReasoning, pending: capabilitiesPending } = useModelReasoning(
+    endpointsConfig,
+    provider,
+    model,
+  );
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -346,18 +359,28 @@ export function useComposerReasoning({
       reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
       blockedReasoningKeys,
+      modelReasoning,
     });
-  }, [blockedReasoningKeys, endpointType, endpointsConfig, isAgent, model, provider]);
-  const settingFingerprint =
-    setting == null
-      ? ''
-      : `${setting.key}:${setting.type}:${setting.options?.join(',') ?? ''}:${setting.range?.min ?? ''}:${setting.range?.positiveMin ?? ''}:${setting.range?.max ?? ''}:${setting.range?.step ?? ''}`;
+  }, [
+    blockedReasoningKeys,
+    endpointType,
+    endpointsConfig,
+    isAgent,
+    model,
+    modelReasoning,
+    provider,
+  ]);
   const targetResolved =
     endpoint !== '' &&
     (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
+  /* The target is the endpoint or agent and the model. The efforts a catalog advertises for it
+     are not part of the identity: a refresh that changes them is not the user switching targets,
+     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below. It
+     is recorded even while the capabilities load, so a switch made then is not mistaken for the
+     first target once they arrive. */
   const targetFingerprint = targetResolved
-    ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
+    ? `${isAgent ? conversation?.agent_id : provider}:${model}`
     : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
@@ -386,13 +409,19 @@ export function useComposerReasoning({
        key may survive while its enum value or number no longer does. */
     const mismatchedSetting =
       setting != null && value != null && !isReasoningOverrideSupported(value, setting);
+    /* While the capabilities are unknown the setting is hidden, which says nothing about the
+       staged choice: keep it until the catalog confirms or refutes it. A switch of target is
+       different, because the choice belonged to the old one, so it clears at once. */
     if (
-      (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
-      value != null
+      value != null &&
+      (targetChanged ||
+        (!capabilitiesPending &&
+          (explicitlyUnavailable || unsupportedResolved || mismatchedSetting)))
     ) {
       setValue(undefined);
     }
   }, [
+    capabilitiesPending,
     explicitlyUnavailable,
     reasoningStateKey,
     setValue,
@@ -402,14 +431,82 @@ export function useComposerReasoning({
     value,
   ]);
 
+  let configuredValue: unknown;
+  if (setting != null) {
+    configuredValue =
+      isAgent && agent != null
+        ? agent.model_parameters?.[setting.key]
+        : conversation?.[setting.key];
+  }
+  const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
+  const thinkingKey: string = 'thinking';
+  const thinkingOff =
+    (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
+    false;
+  /* Switching thinking off withdraws a staged level that would turn it back on; a level picked
+     after the switch is off is the user turning it on for that turn, so it stays. */
+  const previousThinking = useRef({ scope: configuredScope, off: thinkingOff });
+  useEffect(() => {
+    const previous = previousThinking.current;
+    previousThinking.current = { scope: configuredScope, off: thinkingOff };
+    if (
+      previous.scope === configuredScope &&
+      thinkingOff &&
+      !previous.off &&
+      value != null &&
+      THINKING_LEVEL_KEYS.has(value.key)
+    ) {
+      setValue(undefined);
+    }
+  }, [configuredScope, setValue, thinkingOff, value]);
+  /* The configured value changing while the conversation and target stay put is the user setting
+     the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
+     pick does; otherwise the inherited level would silently outrank the edit. */
+  const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
+  useEffect(() => {
+    /* While the capabilities load the setting is hidden, which says nothing about the configured
+       value: keep the last one seen, or its reappearance would read as an edit. */
+    if (setting == null) {
+      return;
+    }
+    const previous = previousConfigured.current;
+    previousConfigured.current = { scope: configuredScope, value: configuredValue };
+    if (
+      previous == null ||
+      previous.scope !== configuredScope ||
+      Object.is(previous.value, configuredValue)
+    ) {
+      return;
+    }
+    /* A reset removes the value; it is the user choosing the default, not leaving the choice. */
+    const editedValue = configuredValue ?? setting.default;
+    if (editedValue == null) {
+      return;
+    }
+    /* A pick turns thinking on; with the switch off, the panel's value stays a parameter. */
+    if (thinkingOff && THINKING_LEVEL_KEYS.has(setting.key)) {
+      return;
+    }
+    const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: editedValue });
+    if (edited.success && isReasoningOverrideSupported(edited.data, setting)) {
+      setValue(edited.data);
+    }
+  }, [configuredScope, configuredValue, setValue, setting, thinkingOff]);
+
   if (!available || setting == null) {
     return null;
   }
 
-  const configuredValue =
-    isAgent && agent != null ? agent.model_parameters?.[setting.key] : conversation?.[setting.key];
+  /* Mirrors the server: thinking switched off wins over a level the next turn would only inherit. */
+  const inherited =
+    branchReasoning != null &&
+    isReasoningOverrideSupported(branchReasoning, setting) &&
+    !(thinkingOff && THINKING_LEVEL_KEYS.has(branchReasoning.key))
+      ? branchReasoning
+      : undefined;
   const displayedValue =
     value ??
+    inherited ??
     reasoningOverrideSchema.safeParse({
       key: setting.key,
       value: configuredValue ?? setting.default,
